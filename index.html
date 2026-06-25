@@ -4,327 +4,288 @@
 <meta charset="UTF-8" />
 <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover, user-scalable=no" />
 <title>記帳 App</title>
-
-<!-- PWA settings -->
 <meta name="apple-mobile-web-app-capable" content="yes" />
 <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
 <meta name="apple-mobile-web-app-title" content="記帳" />
 <meta name="theme-color" content="#4F46E5" />
-
-<!-- App icon (embedded SVG) -->
 <link rel="apple-touch-icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='180' height='180' viewBox='0 0 180 180'%3E%3Cdefs%3E%3ClinearGradient id='g' x1='0' y1='0' x2='1' y2='1'%3E%3Cstop offset='0' stop-color='%234F46E5'/%3E%3Cstop offset='1' stop-color='%236366F1'/%3E%3C/linearGradient%3E%3C/defs%3E%3Crect width='180' height='180' rx='40' fill='url(%23g)'/%3E%3Ctext x='90' y='120' font-size='90' text-anchor='middle' fill='white'%3E%F0%9F%92%B0%3C/text%3E%3C/svg%3E" />
-
 <style>
-  * { margin: 0; padding: 0; box-sizing: border-box; -webkit-tap-highlight-color: transparent; }
-  html, body { background: #F8FAFC; font-family: 'PingFang TC','Noto Sans TC',sans-serif; }
-  #root { min-height: 100vh; }
-  input, button, textarea { font-family: inherit; }
+  * { margin:0; padding:0; box-sizing:border-box; -webkit-tap-highlight-color:transparent; }
+  html, body { background:#F8FAFC; font-family:'PingFang TC','Noto Sans TC',-apple-system,sans-serif; color:#0F172A; }
+  input, button { font-family:inherit; }
+  .tab-btn { flex:1; border:none; border-radius:10px; padding:8px 0; font-size:13px; font-weight:600; background:transparent; color:#64748B; }
+  .tab-btn.active { background:#fff; color:#6366F1; box-shadow:0 1px 3px rgba(0,0,0,0.08); }
+  .nav-btn { flex:1; border:none; background:none; display:flex; flex-direction:column; align-items:center; gap:2px; }
+  .card { background:#fff; border-radius:16px; padding:16px; box-shadow:0 1px 3px rgba(0,0,0,0.08); }
+  .primary-btn { border:none; border-radius:12px; padding:14px; color:#fff; font-weight:700; font-size:14px; }
+  .input { width:100%; padding:10px 12px; border-radius:10px; border:1.5px solid #E2E8F0; font-size:14px; outline:none; box-sizing:border-box; margin-bottom:12px; }
+  .modal-bg { position:fixed; inset:0; background:rgba(0,0,0,0.5); z-index:200; display:flex; align-items:flex-end; }
+  .modal-box { background:#fff; width:100%; max-width:540px; margin:0 auto; border-radius:20px 20px 0 0; padding:20px 20px 36px; max-height:90vh; overflow-y:auto; }
+  .bar { height:6px; background:#E2E8F0; border-radius:3px; overflow:hidden; }
+  .bar-fill { height:100%; transition:width 0.4s; }
 </style>
 </head>
 <body>
-<div id="root"></div>
+<div id="app"></div>
+<script>
+var CATS = [
+  { id:"food", name:"餐飲", icon:"🍜", color:"#FB923C" },
+  { id:"transport", name:"交通", icon:"🚗", color:"#06B6D4" },
+  { id:"shop", name:"購物", icon:"🛍️", color:"#EC4899" },
+  { id:"ent", name:"娛樂", icon:"🎬", color:"#A855F7" },
+  { id:"util", name:"日用品", icon:"🏠", color:"#14B8A6" },
+  { id:"health", name:"醫療", icon:"⚕️", color:"#EF4444" },
+  { id:"other", name:"其他", icon:"📌", color:"#6B7280" }
+];
+var C = { indigo:"#6366F1", indigoDark:"#4F46E5", green:"#10B981", red:"#EF4444", amber:"#F59E0B", blue:"#3B82F6", bg:"#F8FAFC", sub:"#64748B", border:"#E2E8F0" };
+var KEY = "fin_app_v1";
+function fmt(n){ return n==null?"0":Math.abs(n).toLocaleString("zh-TW"); }
+function load(){ try{ var r=localStorage.getItem(KEY); return r?JSON.parse(r):null; }catch(e){ return null; } }
+function persist(){ try{ localStorage.setItem(KEY, JSON.stringify(state.data)); }catch(e){} }
 
-<script crossorigin src="https://unpkg.com/react@18/umd/react.production.min.js"></script>
-<script crossorigin src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
-<script crossorigin src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
-
-<script type="text/babel">
-const { useState, useEffect } = React;
-
-const C = {
-  indigo: "#6366F1", indigoDark: "#4F46E5", indigoLight: "#818CF8",
-  green: "#10B981", red: "#EF4444", amber: "#F59E0B", blue: "#3B82F6",
-  bg: "#F8FAFC", white: "#FFFFFF", text: "#0F172A", sub: "#64748B",
-  border: "#E2E8F0",
+var state = {
+  tab:"home",
+  data: load() || { config:{idNumber:"",phoneBarcode:""}, invoices:[], expenses:[] },
+  modal:null, form:{}, syncMsg:"", syncing:false
 };
 
-const CATS = [
-  { id: "food", name: "餐飲", icon: "🍜", color: "#FB923C" },
-  { id: "transport", name: "交通", icon: "🚗", color: "#06B6D4" },
-  { id: "shop", name: "購物", icon: "🛍️", color: "#EC4899" },
-  { id: "ent", name: "娛樂", icon: "🎬", color: "#A855F7" },
-  { id: "util", name: "日用品", icon: "🏠", color: "#14B8A6" },
-  { id: "health", name: "醫療", icon: "⚕️", color: "#EF4444" },
-  { id: "other", name: "其他", icon: "📌", color: "#6B7280" },
-];
+function setState(patch){ for(var k in patch) state[k]=patch[k]; render(); }
 
-const fmt = (n) => (n == null ? "0" : Math.abs(n).toLocaleString("zh-TW"));
-const STORE_KEY = "fin_app_pwa_v1";
-
-// Use localStorage for standalone PWA
-function loadData() {
-  try {
-    const r = localStorage.getItem(STORE_KEY);
-    return r ? JSON.parse(r) : null;
-  } catch { return null; }
+function getAllExpenses(){
+  var inv = state.data.invoices.map(function(i){ return { amount:i.amount, cat:"other", date:i.date }; });
+  return state.data.expenses.concat(inv);
 }
-function saveData(d) {
-  try { localStorage.setItem(STORE_KEY, JSON.stringify(d)); } catch {}
+function getTotal(){ return getAllExpenses().reduce(function(s,e){ return s+(e.amount||0); },0); }
+function getByCat(){
+  var all=getAllExpenses(), by={};
+  CATS.forEach(function(c){ by[c.id]=all.filter(function(e){return e.cat===c.id;}).reduce(function(s,e){return s+(e.amount||0);},0); });
+  return by;
 }
 
-const DEFAULT = { config: { idNumber: "", phoneBarcode: "" }, invoices: [], expenses: [] };
+function openExpense(item){ state.form=item?Object.assign({},item):{}; state.modal="expense"; render(); }
+function openConfig(){ state.form=Object.assign({},state.data.config); state.modal="config"; render(); }
+function closeModal(){ state.modal=null; state.form={}; render(); }
 
-function App() {
-  const [tab, setTab] = useState("home");
-  const [data, setData] = useState(DEFAULT);
-  const [ready, setReady] = useState(false);
-  const [modal, setModal] = useState(null);
-  const [form, setForm] = useState({});
-  const [syncMsg, setSyncMsg] = useState("");
-  const [syncing, setSyncing] = useState(false);
+function saveExpense(){
+  var f=state.form;
+  var entry={ id:f.id||Date.now(), date:f.date||new Date().toISOString().slice(0,10), amount:parseFloat(f.amount)||0, cat:f.cat||"other", vendor:f.vendor||"" };
+  if(f.id) state.data.expenses=state.data.expenses.map(function(e){return e.id===f.id?entry:e;});
+  else state.data.expenses=[entry].concat(state.data.expenses);
+  persist(); closeModal();
+}
+function deleteExpense(){ state.data.expenses=state.data.expenses.filter(function(e){return e.id!==state.form.id;}); persist(); closeModal(); }
+function saveConfig(){ state.data.config={ idNumber:state.form.idNumber||"", phoneBarcode:state.form.phoneBarcode||"" }; persist(); closeModal(); }
 
-  useEffect(() => {
-    setData(loadData() || DEFAULT);
-    setReady(true);
-  }, []);
-
-  useEffect(() => { if (ready) saveData(data); }, [data, ready]);
-
-  if (!ready) {
-    return <div style={{ display: "flex", alignItems: "center", justifyContent: "center", minHeight: "100vh", color: C.indigo }}>載入中…</div>;
-  }
-
-  const allExpenses = [
-    ...data.expenses,
-    ...data.invoices.map((inv) => ({ amount: inv.amount, cat: "other", date: inv.date })),
-  ];
-  const total = allExpenses.reduce((s, e) => s + (e.amount || 0), 0);
-  const byCat = {};
-  CATS.forEach((c) => { byCat[c.id] = allExpenses.filter((e) => e.cat === c.id).reduce((s, e) => s + (e.amount || 0), 0); });
-
-  const openExpense = (item) => { setForm(item || {}); setModal("expense"); };
-  const openConfig = () => { setForm(data.config); setModal("config"); };
-  const close = () => { setModal(null); setForm({}); };
-
-  const saveExpense = () => {
-    const entry = {
-      id: form.id || Date.now(),
-      date: form.date || new Date().toISOString().slice(0, 10),
-      amount: parseFloat(form.amount) || 0,
-      cat: form.cat || "other",
-      vendor: form.vendor || "",
-    };
-    if (form.id) setData((d) => ({ ...d, expenses: d.expenses.map((e) => (e.id === form.id ? entry : e)) }));
-    else setData((d) => ({ ...d, expenses: [entry, ...d.expenses] }));
-    close();
-  };
-  const deleteExpense = () => { setData((d) => ({ ...d, expenses: d.expenses.filter((e) => e.id !== form.id) })); close(); };
-  const saveConfig = () => { setData((d) => ({ ...d, config: { idNumber: form.idNumber || "", phoneBarcode: form.phoneBarcode || "" } })); close(); };
-
-  const syncInvoices = async () => {
-    if (!data.config.idNumber || !data.config.phoneBarcode) {
-      setSyncMsg("請先設定身分證號和手機條碼");
-      setTimeout(() => setSyncMsg(""), 3000);
-      return;
-    }
-    setSyncing(true);
-    setSyncMsg("同步中…");
-    try {
-      const res = await fetch("https://api.einvoice.nat.gov.tw/PB2CAPIVAN/invapp/MobileBarcode", {
-        method: "POST",
-        headers: { "Content-Type": "application/x-www-form-urlencoded" },
-        body: new URLSearchParams({
-          version: "0.2", action: "qryMobileBarcode",
-          idNumber: data.config.idNumber, cardType: "3",
-          cardNo: data.config.phoneBarcode, appID: "EINVOICE",
-        }),
-      });
-      const text = await res.text();
-      const parts = text.split("@").slice(1);
-      const found = [];
-      parts.forEach((p) => {
-        const f = p.split("|");
-        if (f.length >= 5) {
-          const amt = parseInt(f[2]) || 0;
-          if (amt > 0) found.push({ id: Date.now() + Math.random(), date: new Date().toISOString().slice(0, 10), vendor: "發票商家", amount: amt, number: f[1] });
-        }
-      });
-      setData((d) => ({ ...d, invoices: [...found.filter((nf) => !d.invoices.some((ei) => ei.number === nf.number)), ...d.invoices] }));
-      setSyncMsg(`已同步 ${found.length} 張發票`);
-    } catch { setSyncMsg("同步失敗，請稍後再試"); }
-    setSyncing(false);
-    setTimeout(() => setSyncMsg(""), 4000);
-  };
-
-  const inputStyle = { width: "100%", padding: "10px 12px", borderRadius: 10, border: `1.5px solid ${C.border}`, fontSize: 14, outline: "none", boxSizing: "border-box" };
-
-  return (
-    <div style={{ background: C.bg, minHeight: "100vh", color: C.text, maxWidth: 540, margin: "0 auto", paddingBottom: 90 }}>
-      <div style={{ background: `linear-gradient(135deg, ${C.indigoDark}, ${C.indigo})`, color: "#fff", padding: "calc(env(safe-area-inset-top) + 28px) 20px 28px" }}>
-        <div style={{ fontSize: 12, opacity: 0.8, marginBottom: 6 }}>本月消費</div>
-        <div style={{ fontSize: 32, fontWeight: 800 }}>NT${fmt(total)}</div>
-        <div style={{ fontSize: 11, opacity: 0.7, marginTop: 6 }}>發票 {data.invoices.length} 張 / 手動記帳 {data.expenses.length} 筆</div>
-      </div>
-
-      <div style={{ padding: 16 }}>
-        <div style={{ display: "flex", gap: 2, background: C.bg, borderRadius: 12, padding: 4, marginBottom: 12 }}>
-          {[["home", "概覽"], ["invoice", "發票"], ["list", "記錄"], ["stats", "分析"]].map(([k, label]) => (
-            <button key={k} onClick={() => setTab(k)} style={{ flex: 1, border: "none", borderRadius: 10, padding: "8px 0", fontSize: 13, fontWeight: 600, background: tab === k ? C.white : "transparent", color: tab === k ? C.indigo : C.sub, boxShadow: tab === k ? "0 1px 3px rgba(0,0,0,0.08)" : "none" }}>{label}</button>
-          ))}
-        </div>
-
-        {tab === "home" && (
-          <div style={{ display: "flex", flexDirection: "column", gap: 12 }}>
-            <div style={{ display: "flex", gap: 10 }}>
-              <button onClick={() => openExpense(null)} style={{ flex: 1, border: "none", borderRadius: 12, padding: 14, background: C.red, color: "#fff", fontWeight: 700 }}>＋ 記錄消費</button>
-              <button onClick={syncInvoices} style={{ flex: 1, border: "none", borderRadius: 12, padding: 14, background: C.blue, color: "#fff", fontWeight: 700 }}>📱 同步發票</button>
-            </div>
-            {syncMsg && <div style={{ textAlign: "center", fontSize: 13, color: C.sub, padding: 8 }}>{syncMsg}</div>}
-            <div style={{ background: C.white, borderRadius: 16, padding: 16, boxShadow: "0 1px 3px rgba(0,0,0,0.08)" }}>
-              <div style={{ fontSize: 14, fontWeight: 700, marginBottom: 12 }}>消費分類</div>
-              {CATS.filter((c) => byCat[c.id] > 0).length === 0 ? (
-                <div style={{ fontSize: 12, color: C.sub, textAlign: "center", padding: 20 }}>還沒有消費記錄</div>
-              ) : CATS.filter((c) => byCat[c.id] > 0).map((c) => {
-                const pct = total > 0 ? Math.round((byCat[c.id] / total) * 100) : 0;
-                return (
-                  <div key={c.id} style={{ marginBottom: 10 }}>
-                    <div style={{ display: "flex", justifyContent: "space-between", marginBottom: 4 }}>
-                      <span style={{ fontSize: 13, fontWeight: 600 }}>{c.icon} {c.name}</span>
-                      <span style={{ fontSize: 12, fontWeight: 700, color: c.color }}>NT${fmt(byCat[c.id])}</span>
-                    </div>
-                    <div style={{ height: 6, background: C.border, borderRadius: 3, overflow: "hidden" }}>
-                      <div style={{ height: "100%", background: c.color, width: pct + "%" }} />
-                    </div>
-                  </div>
-                );
-              })}
-            </div>
-          </div>
-        )}
-
-        {tab === "invoice" && (
-          <div style={{ display: "flex", flexDirection: "column", gap: 12 }}>
-            <div style={{ background: `linear-gradient(135deg, ${C.blue}, ${C.indigoLight})`, color: "#fff", borderRadius: 16, padding: 16 }}>
-              <div style={{ fontSize: 14, fontWeight: 700, marginBottom: 6 }}>🔗 發票載具</div>
-              <div style={{ fontSize: 12, opacity: 0.9 }}>{data.config.phoneBarcode ? `已設定：${data.config.phoneBarcode}` : "尚未設定載具"}</div>
-            </div>
-            <button onClick={openConfig} style={{ border: "none", borderRadius: 12, padding: 14, background: C.indigo, color: "#fff", fontWeight: 700 }}>⚙️ 設定載具資訊</button>
-            <button onClick={syncInvoices} disabled={syncing} style={{ border: "none", borderRadius: 12, padding: 14, background: C.blue, color: "#fff", fontWeight: 700, opacity: syncing ? 0.6 : 1 }}>{syncing ? "🔄 同步中…" : "🔄 立即同步發票"}</button>
-            {syncMsg && <div style={{ textAlign: "center", fontSize: 13, color: C.sub }}>{syncMsg}</div>}
-            <div style={{ background: C.white, borderRadius: 16, padding: 16, boxShadow: "0 1px 3px rgba(0,0,0,0.08)" }}>
-              <div style={{ fontSize: 14, fontWeight: 700, marginBottom: 12 }}>同步的發票 ({data.invoices.length})</div>
-              {data.invoices.length === 0 ? (
-                <div style={{ fontSize: 12, color: C.sub, textAlign: "center", padding: 20 }}>還沒同步發票</div>
-              ) : data.invoices.slice(0, 30).map((inv) => (
-                <div key={inv.id} style={{ display: "flex", justifyContent: "space-between", alignItems: "center", padding: "10px 0", borderBottom: `1px solid ${C.border}` }}>
-                  <div><div style={{ fontSize: 13, fontWeight: 600 }}>{inv.vendor}</div><div style={{ fontSize: 11, color: C.sub }}>{inv.date} · {inv.number}</div></div>
-                  <div style={{ fontSize: 13, fontWeight: 700, color: C.red }}>-NT${fmt(inv.amount)}</div>
-                </div>
-              ))}
-            </div>
-          </div>
-        )}
-
-        {tab === "list" && (
-          <div style={{ display: "flex", flexDirection: "column", gap: 12 }}>
-            <button onClick={() => openExpense(null)} style={{ border: "none", borderRadius: 12, padding: 14, background: C.red, color: "#fff", fontWeight: 700 }}>＋ 新增消費</button>
-            <div style={{ background: C.white, borderRadius: 16, padding: 16, boxShadow: "0 1px 3px rgba(0,0,0,0.08)" }}>
-              <div style={{ fontSize: 14, fontWeight: 700, marginBottom: 12 }}>消費記錄 ({data.expenses.length})</div>
-              {data.expenses.length === 0 ? (
-                <div style={{ fontSize: 12, color: C.sub, textAlign: "center", padding: 20 }}>還沒有記錄</div>
-              ) : data.expenses.slice(0, 50).map((e) => {
-                const cat = CATS.find((c) => c.id === e.cat);
-                return (
-                  <div key={e.id} onClick={() => openExpense(e)} style={{ display: "flex", alignItems: "center", gap: 12, padding: "10px 0", borderBottom: `1px solid ${C.border}` }}>
-                    <span style={{ fontSize: 18 }}>{cat ? cat.icon : "📌"}</span>
-                    <div style={{ flex: 1 }}><div style={{ fontSize: 13, fontWeight: 600 }}>{cat ? cat.name : "其他"}{e.vendor ? ` · ${e.vendor}` : ""}</div><div style={{ fontSize: 11, color: C.sub }}>{e.date}</div></div>
-                    <div style={{ fontSize: 13, fontWeight: 700, color: C.red }}>-NT${fmt(e.amount)}</div>
-                  </div>
-                );
-              })}
-            </div>
-          </div>
-        )}
-
-        {tab === "stats" && (
-          <div style={{ display: "flex", flexDirection: "column", gap: 12 }}>
-            <div style={{ background: C.white, borderRadius: 16, padding: 16, boxShadow: "0 1px 3px rgba(0,0,0,0.08)" }}>
-              <div style={{ fontSize: 14, fontWeight: 700, marginBottom: 12 }}>統計</div>
-              <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 10 }}>
-                {[["總消費", "NT$" + fmt(total), C.red], ["消費筆數", allExpenses.length, C.blue], ["發票數", data.invoices.length, C.green], ["手動記帳", data.expenses.length, C.amber]].map(([label, val, color]) => (
-                  <div key={label} style={{ background: C.bg, borderRadius: 12, padding: 12, textAlign: "center" }}>
-                    <div style={{ fontSize: 10, color: C.sub, marginBottom: 4 }}>{label}</div>
-                    <div style={{ fontSize: 16, fontWeight: 800, color }}>{val}</div>
-                  </div>
-                ))}
-              </div>
-            </div>
-            <div style={{ background: C.white, borderRadius: 16, padding: 16, boxShadow: "0 1px 3px rgba(0,0,0,0.08)" }}>
-              <div style={{ fontSize: 14, fontWeight: 700, marginBottom: 12 }}>分類佔比</div>
-              {CATS.filter((c) => byCat[c.id] > 0).length === 0 ? (
-                <div style={{ fontSize: 12, color: C.sub, textAlign: "center", padding: 20 }}>還沒有資料</div>
-              ) : CATS.filter((c) => byCat[c.id] > 0).map((c) => {
-                const pct = total > 0 ? Math.round((byCat[c.id] / total) * 100) : 0;
-                return (
-                  <div key={c.id} style={{ marginBottom: 10 }}>
-                    <div style={{ display: "flex", justifyContent: "space-between", marginBottom: 4 }}>
-                      <span style={{ fontSize: 12, fontWeight: 600 }}>{c.icon} {c.name}</span>
-                      <span style={{ fontSize: 12, fontWeight: 700, color: c.color }}>{pct}%</span>
-                    </div>
-                    <div style={{ height: 8, background: C.border, borderRadius: 4, overflow: "hidden" }}>
-                      <div style={{ height: "100%", background: c.color, width: pct + "%" }} />
-                    </div>
-                  </div>
-                );
-              })}
-            </div>
-          </div>
-        )}
-      </div>
-
-      <div style={{ position: "fixed", bottom: 0, left: 0, right: 0, background: C.white, borderTop: `1px solid ${C.border}`, display: "flex", padding: "10px 0 calc(env(safe-area-inset-bottom) + 12px)", maxWidth: 540, margin: "0 auto" }}>
-        {[["home", "🏠", "概覽"], ["invoice", "📱", "發票"], ["list", "📒", "記錄"], ["stats", "📊", "分析"]].map(([k, icon, label]) => (
-          <button key={k} onClick={() => setTab(k)} style={{ flex: 1, border: "none", background: "none", display: "flex", flexDirection: "column", alignItems: "center", gap: 2 }}>
-            <span style={{ fontSize: 20 }}>{icon}</span>
-            <span style={{ fontSize: 10, fontWeight: 600, color: tab === k ? C.indigo : C.sub }}>{label}</span>
-          </button>
-        ))}
-      </div>
-
-      {modal === "expense" && (
-        <div style={{ position: "fixed", inset: 0, background: "rgba(0,0,0,0.5)", zIndex: 200, display: "flex", alignItems: "flex-end" }} onClick={close}>
-          <div onClick={(e) => e.stopPropagation()} style={{ background: C.white, width: "100%", maxWidth: 540, margin: "0 auto", borderRadius: "20px 20px 0 0", padding: "20px 20px 36px", maxHeight: "90vh", overflowY: "auto" }}>
-            <div style={{ width: 36, height: 4, background: C.border, borderRadius: 2, margin: "0 auto 16px" }} />
-            <h3 style={{ fontSize: 16, fontWeight: 700, margin: "0 0 16px" }}>{form.id ? "編輯消費" : "記錄消費"}</h3>
-            <label style={{ fontSize: 11, color: C.sub, display: "block", marginBottom: 4 }}>日期</label>
-            <input type="date" value={form.date || new Date().toISOString().slice(0, 10)} onChange={(e) => setForm((f) => ({ ...f, date: e.target.value }))} style={{ ...inputStyle, marginBottom: 12 }} />
-            <label style={{ fontSize: 11, color: C.sub, display: "block", marginBottom: 4 }}>分類</label>
-            <div style={{ display: "flex", gap: 6, flexWrap: "wrap", marginBottom: 12 }}>
-              {CATS.map((c) => (
-                <button key={c.id} onClick={() => setForm((f) => ({ ...f, cat: c.id }))} style={{ padding: "8px 12px", borderRadius: 10, fontSize: 12, fontWeight: 600, border: `1.5px solid ${form.cat === c.id ? c.color : C.border}`, background: form.cat === c.id ? c.color + "22" : "transparent", color: form.cat === c.id ? c.color : C.sub }}>{c.icon} {c.name}</button>
-              ))}
-            </div>
-            <label style={{ fontSize: 11, color: C.sub, display: "block", marginBottom: 4 }}>商家</label>
-            <input type="text" value={form.vendor || ""} onChange={(e) => setForm((f) => ({ ...f, vendor: e.target.value }))} placeholder="例：便利商店" style={{ ...inputStyle, marginBottom: 12 }} />
-            <label style={{ fontSize: 11, color: C.sub, display: "block", marginBottom: 4 }}>金額（NT$）</label>
-            <input type="number" value={form.amount || ""} onChange={(e) => setForm((f) => ({ ...f, amount: e.target.value }))} placeholder="0" style={{ ...inputStyle, marginBottom: 16 }} />
-            <div style={{ display: "flex", gap: 8 }}>
-              <button onClick={saveExpense} style={{ flex: 1, border: "none", borderRadius: 10, padding: 12, background: C.indigo, color: "#fff", fontWeight: 700 }}>儲存</button>
-              {form.id && <button onClick={deleteExpense} style={{ width: 60, border: "none", borderRadius: 10, padding: 12, background: C.border, color: C.red, fontWeight: 700 }}>刪除</button>}
-            </div>
-          </div>
-        </div>
-      )}
-
-      {modal === "config" && (
-        <div style={{ position: "fixed", inset: 0, background: "rgba(0,0,0,0.5)", zIndex: 200, display: "flex", alignItems: "flex-end" }} onClick={close}>
-          <div onClick={(e) => e.stopPropagation()} style={{ background: C.white, width: "100%", maxWidth: 540, margin: "0 auto", borderRadius: "20px 20px 0 0", padding: "20px 20px 36px" }}>
-            <div style={{ width: 36, height: 4, background: C.border, borderRadius: 2, margin: "0 auto 16px" }} />
-            <h3 style={{ fontSize: 16, fontWeight: 700, margin: "0 0 16px" }}>設定載具資訊</h3>
-            <label style={{ fontSize: 11, color: C.sub, display: "block", marginBottom: 4 }}>身分證字號</label>
-            <input type="text" value={form.idNumber || ""} onChange={(e) => setForm((f) => ({ ...f, idNumber: e.target.value }))} placeholder="A123456789" style={{ ...inputStyle, marginBottom: 12 }} />
-            <label style={{ fontSize: 11, color: C.sub, display: "block", marginBottom: 4 }}>手機條碼（含 / 開頭）</label>
-            <input type="text" value={form.phoneBarcode || ""} onChange={(e) => setForm((f) => ({ ...f, phoneBarcode: e.target.value }))} placeholder="/ABC1234" style={{ ...inputStyle, marginBottom: 12 }} />
-            <div style={{ background: C.bg, borderRadius: 10, padding: 12, marginBottom: 16, fontSize: 11, color: C.sub, lineHeight: 1.6 }}>💡 你的資訊只儲存在本機，不會上傳。</div>
-            <button onClick={saveConfig} style={{ width: "100%", border: "none", borderRadius: 10, padding: 12, background: C.indigo, color: "#fff", fontWeight: 700 }}>儲存</button>
-          </div>
-        </div>
-      )}
-    </div>
-  );
+function syncInvoices(){
+  var cfg=state.data.config;
+  if(!cfg.idNumber||!cfg.phoneBarcode){ setState({syncMsg:"請先設定身分證號和手機條碼"}); setTimeout(function(){setState({syncMsg:""});},3000); return; }
+  setState({syncing:true, syncMsg:"同步中…"});
+  fetch("https://api.einvoice.nat.gov.tw/PB2CAPIVAN/invapp/MobileBarcode", {
+    method:"POST", headers:{"Content-Type":"application/x-www-form-urlencoded"},
+    body:new URLSearchParams({ version:"0.2", action:"qryMobileBarcode", idNumber:cfg.idNumber, cardType:"3", cardNo:cfg.phoneBarcode, appID:"EINVOICE" })
+  }).then(function(res){ return res.text(); }).then(function(text){
+    var parts=text.split("@").slice(1), found=[];
+    parts.forEach(function(p){ var ff=p.split("|"); if(ff.length>=5){ var amt=parseInt(ff[2])||0; if(amt>0) found.push({ id:Date.now()+Math.random(), date:new Date().toISOString().slice(0,10), vendor:"發票商家", amount:amt, number:ff[1] }); } });
+    var existing=state.data.invoices;
+    state.data.invoices=found.filter(function(nf){return !existing.some(function(ei){return ei.number===nf.number;});}).concat(existing);
+    persist(); setState({syncing:false, syncMsg:"已同步 "+found.length+" 張發票"});
+  }).catch(function(){ setState({syncing:false, syncMsg:"同步失敗，請稍後再試"}); });
+  setTimeout(function(){setState({syncMsg:""});},5000);
 }
 
-ReactDOM.createRoot(document.getElementById("root")).render(<App />);
+function el(tag, props){
+  var node=document.createElement(tag);
+  if(props){ for(var k in props){
+    if(k==="style") node.setAttribute("style",props[k]);
+    else if(k==="class") node.className=props[k];
+    else if(k.indexOf("on")===0) node.addEventListener(k.slice(2).toLowerCase(),props[k]);
+    else if(k==="value") node.value=props[k];
+    else node.setAttribute(k,props[k]);
+  } }
+  var kids=Array.prototype.slice.call(arguments,2);
+  kids.forEach(function appendKid(kid){
+    if(kid==null||kid===false) return;
+    if(Array.isArray(kid)){ kid.forEach(appendKid); return; }
+    node.appendChild(typeof kid==="object"?kid:document.createTextNode(String(kid)));
+  });
+  return node;
+}
+
+function render(){
+  var root=document.getElementById("app");
+  root.innerHTML="";
+  var total=getTotal(), byCat=getByCat(), d=state.data;
+  var wrap=el("div",{style:"background:"+C.bg+";min-height:100vh;max-width:540px;margin:0 auto;padding-bottom:90px;"});
+
+  wrap.appendChild(el("div",{style:"background:linear-gradient(135deg,"+C.indigoDark+","+C.indigo+");color:#fff;padding:calc(env(safe-area-inset-top) + 28px) 20px 28px;"},
+    el("div",{style:"font-size:12px;opacity:0.8;margin-bottom:6px;"},"本月消費"),
+    el("div",{style:"font-size:32px;font-weight:800;"},"NT$"+fmt(total)),
+    el("div",{style:"font-size:11px;opacity:0.7;margin-top:6px;"},"發票 "+d.invoices.length+" 張 / 手動記帳 "+d.expenses.length+" 筆")
+  ));
+
+  var bodyEl=el("div",{style:"padding:16px;"});
+  var tabs=el("div",{style:"display:flex;gap:2px;background:"+C.bg+";border-radius:12px;padding:4px;margin-bottom:12px;"});
+  [["home","概覽"],["invoice","發票"],["list","記錄"],["stats","分析"]].forEach(function(t){
+    tabs.appendChild(el("button",{class:"tab-btn"+(state.tab===t[0]?" active":""),onClick:function(){setState({tab:t[0]});}},t[1]));
+  });
+  bodyEl.appendChild(tabs);
+
+  if(state.tab==="home") bodyEl.appendChild(renderHome(total,byCat));
+  if(state.tab==="invoice") bodyEl.appendChild(renderInvoice());
+  if(state.tab==="list") bodyEl.appendChild(renderList());
+  if(state.tab==="stats") bodyEl.appendChild(renderStats(total,byCat));
+  wrap.appendChild(bodyEl);
+
+  var nav=el("div",{style:"position:fixed;bottom:0;left:0;right:0;background:#fff;border-top:1px solid "+C.border+";display:flex;padding:10px 0 calc(env(safe-area-inset-bottom) + 12px);max-width:540px;margin:0 auto;"});
+  [["home","🏠","概覽"],["invoice","📱","發票"],["list","📒","記錄"],["stats","📊","分析"]].forEach(function(t){
+    nav.appendChild(el("button",{class:"nav-btn",onClick:function(){setState({tab:t[0]});}},
+      el("span",{style:"font-size:20px;"},t[1]),
+      el("span",{style:"font-size:10px;font-weight:600;color:"+(state.tab===t[0]?C.indigo:C.sub)+";"},t[2])));
+  });
+  wrap.appendChild(nav);
+  root.appendChild(wrap);
+
+  if(state.modal==="expense") root.appendChild(renderExpenseModal());
+  if(state.modal==="config") root.appendChild(renderConfigModal());
+}
+
+function renderHome(total,byCat){
+  var box=el("div",{style:"display:flex;flex-direction:column;gap:12px;"});
+  var btns=el("div",{style:"display:flex;gap:10px;"});
+  btns.appendChild(el("button",{class:"primary-btn",style:"flex:1;background:"+C.red+";",onClick:function(){openExpense(null);}},"＋ 記錄消費"));
+  btns.appendChild(el("button",{class:"primary-btn",style:"flex:1;background:"+C.blue+";",onClick:syncInvoices},"📱 同步發票"));
+  box.appendChild(btns);
+  if(state.syncMsg) box.appendChild(el("div",{style:"text-align:center;font-size:13px;color:"+C.sub+";padding:8px;"},state.syncMsg));
+  var card=el("div",{class:"card"},el("div",{style:"font-size:14px;font-weight:700;margin-bottom:12px;"},"消費分類"));
+  var active=CATS.filter(function(c){return byCat[c.id]>0;});
+  if(active.length===0) card.appendChild(el("div",{style:"font-size:12px;color:"+C.sub+";text-align:center;padding:20px;"},"還沒有消費記錄"));
+  else active.forEach(function(c){
+    var pct=total>0?Math.round(byCat[c.id]/total*100):0;
+    var row=el("div",{style:"margin-bottom:10px;"});
+    row.appendChild(el("div",{style:"display:flex;justify-content:space-between;margin-bottom:4px;"},
+      el("span",{style:"font-size:13px;font-weight:600;"},c.icon+" "+c.name),
+      el("span",{style:"font-size:12px;font-weight:700;color:"+c.color+";"},"NT$"+fmt(byCat[c.id]))));
+    row.appendChild(el("div",{class:"bar"},el("div",{class:"bar-fill",style:"background:"+c.color+";width:"+pct+"%;"})));
+    card.appendChild(row);
+  });
+  box.appendChild(card);
+  return box;
+}
+
+function renderInvoice(){
+  var d=state.data;
+  var box=el("div",{style:"display:flex;flex-direction:column;gap:12px;"});
+  box.appendChild(el("div",{style:"background:linear-gradient(135deg,"+C.blue+",#818CF8);color:#fff;border-radius:16px;padding:16px;"},
+    el("div",{style:"font-size:14px;font-weight:700;margin-bottom:6px;"},"🔗 發票載具"),
+    el("div",{style:"font-size:12px;opacity:0.9;"},d.config.phoneBarcode?("已設定："+d.config.phoneBarcode):"尚未設定載具")));
+  box.appendChild(el("button",{class:"primary-btn",style:"background:"+C.indigo+";",onClick:openConfig},"⚙️ 設定載具資訊"));
+  box.appendChild(el("button",{class:"primary-btn",style:"background:"+C.blue+";opacity:"+(state.syncing?0.6:1)+";",onClick:syncInvoices},state.syncing?"🔄 同步中…":"🔄 立即同步發票"));
+  if(state.syncMsg) box.appendChild(el("div",{style:"text-align:center;font-size:13px;color:"+C.sub+";"},state.syncMsg));
+  var card=el("div",{class:"card"},el("div",{style:"font-size:14px;font-weight:700;margin-bottom:12px;"},"同步的發票 ("+d.invoices.length+")"));
+  if(d.invoices.length===0) card.appendChild(el("div",{style:"font-size:12px;color:"+C.sub+";text-align:center;padding:20px;"},"還沒同步發票"));
+  else d.invoices.slice(0,30).forEach(function(inv){
+    card.appendChild(el("div",{style:"display:flex;justify-content:space-between;align-items:center;padding:10px 0;border-bottom:1px solid "+C.border+";"},
+      el("div",{},el("div",{style:"font-size:13px;font-weight:600;"},inv.vendor),el("div",{style:"font-size:11px;color:"+C.sub+";"},inv.date+" · "+inv.number)),
+      el("div",{style:"font-size:13px;font-weight:700;color:"+C.red+";"},"-NT$"+fmt(inv.amount))));
+  });
+  box.appendChild(card);
+  return box;
+}
+
+function renderList(){
+  var d=state.data;
+  var box=el("div",{style:"display:flex;flex-direction:column;gap:12px;"});
+  box.appendChild(el("button",{class:"primary-btn",style:"background:"+C.red+";",onClick:function(){openExpense(null);}},"＋ 新增消費"));
+  var card=el("div",{class:"card"},el("div",{style:"font-size:14px;font-weight:700;margin-bottom:12px;"},"消費記錄 ("+d.expenses.length+")"));
+  if(d.expenses.length===0) card.appendChild(el("div",{style:"font-size:12px;color:"+C.sub+";text-align:center;padding:20px;"},"還沒有記錄"));
+  else d.expenses.slice(0,50).forEach(function(e){
+    var cat=CATS.filter(function(c){return c.id===e.cat;})[0];
+    card.appendChild(el("div",{style:"display:flex;align-items:center;gap:12px;padding:10px 0;border-bottom:1px solid "+C.border+";",onClick:function(){openExpense(e);}},
+      el("span",{style:"font-size:18px;"},cat?cat.icon:"📌"),
+      el("div",{style:"flex:1;"},el("div",{style:"font-size:13px;font-weight:600;"},(cat?cat.name:"其他")+(e.vendor?" · "+e.vendor:"")),el("div",{style:"font-size:11px;color:"+C.sub+";"},e.date)),
+      el("div",{style:"font-size:13px;font-weight:700;color:"+C.red+";"},"-NT$"+fmt(e.amount))));
+  });
+  box.appendChild(card);
+  return box;
+}
+
+function renderStats(total,byCat){
+  var d=state.data;
+  var box=el("div",{style:"display:flex;flex-direction:column;gap:12px;"});
+  var statCard=el("div",{class:"card"},el("div",{style:"font-size:14px;font-weight:700;margin-bottom:12px;"},"統計"));
+  var grid=el("div",{style:"display:grid;grid-template-columns:1fr 1fr;gap:10px;"});
+  [["總消費","NT$"+fmt(total),C.red],["消費筆數",getAllExpenses().length,C.blue],["發票數",d.invoices.length,C.green],["手動記帳",d.expenses.length,C.amber]].forEach(function(s){
+    grid.appendChild(el("div",{style:"background:"+C.bg+";border-radius:12px;padding:12px;text-align:center;"},
+      el("div",{style:"font-size:10px;color:"+C.sub+";margin-bottom:4px;"},s[0]),
+      el("div",{style:"font-size:16px;font-weight:800;color:"+s[2]+";"},String(s[1]))));
+  });
+  statCard.appendChild(grid);
+  box.appendChild(statCard);
+  var catCard=el("div",{class:"card"},el("div",{style:"font-size:14px;font-weight:700;margin-bottom:12px;"},"分類佔比"));
+  var active=CATS.filter(function(c){return byCat[c.id]>0;});
+  if(active.length===0) catCard.appendChild(el("div",{style:"font-size:12px;color:"+C.sub+";text-align:center;padding:20px;"},"還沒有資料"));
+  else active.forEach(function(c){
+    var pct=total>0?Math.round(byCat[c.id]/total*100):0;
+    var row=el("div",{style:"margin-bottom:10px;"});
+    row.appendChild(el("div",{style:"display:flex;justify-content:space-between;margin-bottom:4px;"},
+      el("span",{style:"font-size:12px;font-weight:600;"},c.icon+" "+c.name),
+      el("span",{style:"font-size:12px;font-weight:700;color:"+c.color+";"},pct+"%")));
+    row.appendChild(el("div",{class:"bar",style:"height:8px;"},el("div",{class:"bar-fill",style:"background:"+c.color+";width:"+pct+"%;"})));
+    catCard.appendChild(row);
+  });
+  box.appendChild(catCard);
+  return box;
+}
+
+function modalShell(title){
+  var content=Array.prototype.slice.call(arguments,1);
+  var bg=el("div",{class:"modal-bg",onClick:closeModal});
+  var args=[{class:"modal-box",onClick:function(e){e.stopPropagation();}},
+    el("div",{style:"width:36px;height:4px;background:"+C.border+";border-radius:2px;margin:0 auto 16px;"}),
+    el("h3",{style:"font-size:16px;font-weight:700;margin:0 0 16px;"},title)].concat(content);
+  var boxEl=el.apply(null,["div"].concat(args));
+  bg.appendChild(boxEl);
+  return bg;
+}
+
+function renderExpenseModal(){
+  var f=state.form;
+  var dateInput=el("input",{class:"input",type:"date",value:f.date||new Date().toISOString().slice(0,10)});
+  dateInput.addEventListener("change",function(e){state.form.date=e.target.value;});
+  var vendorInput=el("input",{class:"input",type:"text",placeholder:"例：便利商店",value:f.vendor||""});
+  vendorInput.addEventListener("input",function(e){state.form.vendor=e.target.value;});
+  var amountInput=el("input",{class:"input",type:"number",placeholder:"0",value:f.amount||""});
+  amountInput.addEventListener("input",function(e){state.form.amount=e.target.value;});
+  var catRow=el("div",{style:"display:flex;gap:6px;flex-wrap:wrap;margin-bottom:12px;"});
+  CATS.forEach(function(c){
+    var sel=state.form.cat===c.id;
+    catRow.appendChild(el("button",{style:"padding:8px 12px;border-radius:10px;font-size:12px;font-weight:600;border:1.5px solid "+(sel?c.color:C.border)+";background:"+(sel?c.color+"22":"transparent")+";color:"+(sel?c.color:C.sub)+";",onClick:function(){state.form.cat=c.id;render();}},c.icon+" "+c.name));
+  });
+  var actions=el("div",{style:"display:flex;gap:8px;"});
+  actions.appendChild(el("button",{style:"flex:1;border:none;border-radius:10px;padding:12px;background:"+C.indigo+";color:#fff;font-weight:700;",onClick:saveExpense},"儲存"));
+  if(f.id) actions.appendChild(el("button",{style:"width:60px;border:none;border-radius:10px;padding:12px;background:"+C.border+";color:"+C.red+";font-weight:700;",onClick:deleteExpense},"刪除"));
+  return modalShell(f.id?"編輯消費":"記錄消費",
+    el("label",{style:"font-size:11px;color:"+C.sub+";display:block;margin-bottom:4px;"},"日期"),dateInput,
+    el("label",{style:"font-size:11px;color:"+C.sub+";display:block;margin-bottom:4px;"},"分類"),catRow,
+    el("label",{style:"font-size:11px;color:"+C.sub+";display:block;margin-bottom:4px;"},"商家"),vendorInput,
+    el("label",{style:"font-size:11px;color:"+C.sub+";display:block;margin-bottom:4px;"},"金額（NT$）"),amountInput,
+    actions);
+}
+
+function renderConfigModal(){
+  var f=state.form;
+  var idInput=el("input",{class:"input",type:"text",placeholder:"A123456789",value:f.idNumber||""});
+  idInput.addEventListener("input",function(e){state.form.idNumber=e.target.value;});
+  var bcInput=el("input",{class:"input",type:"text",placeholder:"/ABC1234",value:f.phoneBarcode||""});
+  bcInput.addEventListener("input",function(e){state.form.phoneBarcode=e.target.value;});
+  return modalShell("設定載具資訊",
+    el("label",{style:"font-size:11px;color:"+C.sub+";display:block;margin-bottom:4px;"},"身分證字號"),idInput,
+    el("label",{style:"font-size:11px;color:"+C.sub+";display:block;margin-bottom:4px;"},"手機條碼（含 / 開頭）"),bcInput,
+    el("div",{style:"background:"+C.bg+";border-radius:10px;padding:12px;margin-bottom:16px;font-size:11px;color:"+C.sub+";line-height:1.6;"},"💡 你的資訊只儲存在本機，不會上傳。"),
+    el("button",{style:"width:100%;border:none;border-radius:10px;padding:12px;background:"+C.indigo+";color:#fff;font-weight:700;",onClick:saveConfig},"儲存"));
+}
+
+render();
 </script>
 </body>
 </html>
