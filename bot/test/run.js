@@ -1540,6 +1540,53 @@ function freshStore(){
   assert("腳本內容仍是可讀的 UTF-8", text.includes("守門員") && text.includes("Start-Process"));
 }
 
+/* ═══ 執行期切換模擬／真錢 ═══
+   /mode 就是改 config.mode.dryRun 這一個欄位。所有模組都拿同一個 config 物件，
+   所以這裡測的是「改了之後真的會照新模式走」——以及更重要的：
+   既有部位不會因為切模式就改變性質。 */
+{
+  const store = freshStore();
+  const cli = createCli({ execFileImpl: makeExecFile() });
+  const trader = createTrader({ cli, store });
+  const before = config.mode.dryRun;
+
+  /* 模擬模式下買一筆 */
+  config.mode.dryRun = true;
+  const p1 = await trader.prepareBuy({ address: "Tok1111111111111111111111111111111111111111" });
+  const b1 = await trader.executeBuy(p1);
+  assert("模擬模式買到的是模擬部位", b1.ok && b1.position.dryRun === true);
+
+  /* 切到真錢，再買一筆 */
+  config.mode.dryRun = false;
+  const p2 = await trader.prepareBuy({ address: "Tok2222222222222222222222222222222222222222" });
+  const b2 = await trader.executeBuy(p2);
+  assert("切換後買到的是真錢部位", b2.ok && b2.position.dryRun === false, String(b2.error ?? ""));
+
+  /* 切模式之前開的那筆，必須還是模擬 —— 這是最重要的一條。
+     如果切到真錢會讓舊的模擬部位變成「真的」，
+     它的出場就會真的去鏈上送賣單，賣一個你根本沒買過的東西。 */
+  const stillPaper = store.openPositions().find(x => x.id === b1.position.id);
+  assert("切到真錢不會把舊的模擬部位變成真的", stillPaper.dryRun === true);
+
+  /* 反過來也一樣：切回模擬，真錢部位仍然是真的 */
+  config.mode.dryRun = true;
+  const stillLive = store.openPositions().find(x => x.id === b2.position.id);
+  assert("切回模擬不會把真錢部位變成模擬", stillLive.dryRun === false);
+
+  /* 賣出走的是部位自己的旗標，不是當下的模式 */
+  const sold = await trader.sellPosition(stillLive, { percent: 100, reason: "測試" });
+  assert("真錢部位在模擬模式下賣出仍記為真錢單",
+    sold.ok && sold.trade.dryRun === false, JSON.stringify(sold.trade ?? {}));
+
+  /* 統計分開算，切模式不會把兩邊混在一起 */
+  const dry = stats(store, config, { mode: "dry" });
+  const live = stats(store, config, { mode: "live" });
+  assert("模擬與真錢的平倉紀錄分開計算",
+    (live.n ?? 0) === 1 && (dry.n ?? 0) === 0, `live=${live.n} dry=${dry.n}`);
+
+  config.mode.dryRun = before;
+}
+
 console.log("");
 if(failures){
   console.log(`${failures} 項測試失敗`);

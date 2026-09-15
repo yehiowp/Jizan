@@ -262,9 +262,19 @@ export function createTrader({ cli, store, cfg = config }){
       return { ok: true, position: pos, strategyMissing: !pos.strategyOrderId };
     },
 
-    /* ── 賣出。percent 是持倉百分比。 ── */
-    async sellPosition(position, { percent = 100, reason = "手動", dryRun = cfg.mode.dryRun, exitPrice = null } = {}){
-      if(dryRun || position.dryRun){
+    /* ── 賣出。percent 是持倉百分比。 ──
+
+       出場方式由「部位自己」決定，不是由當下的模式決定。這個分別很要命：
+       真錢部位如果因為機器人現在是模擬模式就走記帳出場，帳本會顯示已平倉、
+       損益也照算，但鏈上那些幣其實還在你錢包裡 —— 你以為空手，實際滿倉。
+       執行期可以 /mode 切換模式之後，這條路就真的走得到了。
+
+       dryRun 這個參數只在呼叫端「明講」時才蓋過部位的旗標。
+       對帳（reconcile）需要它：幣已經被伺服器端的停損賣掉了，
+       那筆要純記帳，不能再送一次賣單。 */
+    async sellPosition(position, { percent = 100, reason = "手動", dryRun = undefined, exitPrice = null } = {}){
+      const bookOnly = dryRun === undefined ? !!position.dryRun : !!dryRun;
+      if(bookOnly){
         const price = exitPrice ?? position.lastPrice ?? position.entryPrice;
         return closeOut(position, { price, percent, reason, hash: "", dryRun: true });
       }

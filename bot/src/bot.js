@@ -116,6 +116,7 @@ export function createBot({ cli, store, trader, cfg = config }){
         "/sell <id> [百分比] 賣出",
         "/stats 績效",
         "/status 系統狀態",
+        "/mode paper|live 切換模擬／真錢",
         "/config 目前參數",
         "/panic 全部賣光並停止交易",
         "/resume 恢復交易",
@@ -257,6 +258,95 @@ export function createBot({ cli, store, trader, cfg = config }){
       ].join("\n"));
     },
 
+    /* /mode            看目前模式
+       /mode paper      切回模擬（隨時可以，不需要確認）
+       /mode live       切到真錢（要按確認鍵，而且有前置條件）
+
+       為什麼切到真錢要這麼囉唆、切回模擬卻不用：兩個方向的風險不對稱。
+       切回模擬最壞的結果是少賺，切到真錢最壞的結果是你在不知情的狀況下開始花錢。 */
+    async mode(sub){
+      const want = String(sub ?? "").toLowerCase();
+
+      if(!want){
+        return say([
+          modeLine(),
+          "",
+          "/mode paper  切到模擬（不動真錢）",
+          "/mode live   切到真錢",
+          "",
+          `重啟後會回到 .env 的設定（DRY_RUN=${cfg.mode.dryRun ? "true" : "false"}）。`,
+          "要讓模式在重啟後還在，就去改 .env。"
+        ].join("\n"));
+      }
+
+      if(["paper", "dry", "模擬", "sim"].includes(want)){
+        if(cfg.mode.dryRun) return say("已經是模擬模式了。");
+        cfg.mode.dryRun = true;
+        store.disarmAuto("切換到模擬模式");
+        log.warn("切換到模擬模式", { by: "telegram" });
+        return say([
+          "🧪 已切到模擬模式",
+          "",
+          "從現在起的新單只記帳，不會送上鏈。",
+          "⚠️ 已經開著的真錢部位還是真的 —— 它們的停損停利掛在 GMGN 伺服器端，",
+          "　 照樣會成交。要出場請用 /positions 看，再 /sell。",
+          "",
+          "自動交易已順便解除武裝，要跑請重新 /auto on。"
+        ].join("\n"));
+      }
+
+      if(["live", "real", "真錢"].includes(want)){
+        if(!cfg.mode.dryRun) return say("已經是真錢模式了。");
+
+        /* 這道門是啟動時由你本人在 shell 開的，不能在執行期繞過去 ——
+           否則「用 Telegram 指令就能讓它開始花錢」就成立了，
+           而 Telegram 那端我擋不住被盜的帳號。 */
+        if(process.env.GMGN_ALLOW_AUTOMATED_TRADES !== "1"){
+          return say([
+            "🚫 不能切到真錢模式。",
+            "",
+            "這個機器人啟動時沒有開自動下單的防線（GMGN_ALLOW_AUTOMATED_TRADES）。",
+            "那道防線必須由你本人在電腦上開，不能用 Telegram 指令繞過去 ——",
+            "不然任何拿到你 Telegram 的人都能讓它開始花錢。",
+            "",
+            "要開的話，在電腦上停掉機器人，然後："
+            + "\n  $env:GMGN_ALLOW_AUTOMATED_TRADES = \"1\""
+            + "\n  powershell -ExecutionPolicy Bypass -File scripts\\run-forever.ps1"
+          ].join("\n"));
+        }
+
+        if(!cfg.gmgn.walletAddress){
+          return say("🚫 還沒設定 GMGN_WALLET_ADDRESS，真錢模式下不知道要從哪個錢包出金。\n在電腦上跑 npm run setup 填好再切。");
+        }
+
+        const g = realMoneyGate(store);
+        const gateLines = g.checks.map(c => `${c.ok ? "✅" : "❌"} ${c.label}（現在 ${c.now}）`);
+
+        return say([
+          "💸 要切到真錢模式？",
+          "",
+          "模擬成績：",
+          ...gateLines,
+          "",
+          g.pass
+            ? "三條都過了。"
+            : "⚠️ 還沒達標。這不擋你 —— 但沒過的意思是「還沒有證據顯示這套打法在你手上會賺」。",
+          "",
+          `每筆 ${usd(cfg.risk.positionUsd)}、單日虧損上限 ${usd(cfg.risk.maxDailyLossUsd)}、淨值跌破 ${usd(cfg.risk.killSwitchUsd)} 全面停機。`,
+          "既有的模擬部位不會變成真的，它們會繼續用模擬方式結算。",
+          "",
+          "重啟後會回到 .env 的設定（現在是模擬）。要永久改就改 .env 的 DRY_RUN。"
+        ].join("\n"), {
+          reply_markup: { inline_keyboard: [[
+            { text: "確認切到真錢", callback_data: "mode:live" },
+            { text: "取消", callback_data: "mode:cancel" }
+          ]] }
+        });
+      }
+
+      return say("只認得 /mode paper 和 /mode live。");
+    },
+
     async config(){
       await say([
         modeLine(),
@@ -269,7 +359,7 @@ export function createBot({ cli, store, trader, cfg = config }){
         `滑價 ${cfg.exec.slippagePct}%　gas 檔位 ${cfg.exec.gasTier}　防夾 ${cfg.exec.antiMev ? "開" : "關"}`,
         `分數門檻 ${cfg.filter.minScore}　深度門檻 ${usd(cfg.filter.minDepthUsd)}`,
         "",
-        "參數改 .env 之後重啟機器人。"
+        "參數改 .env 之後重啟機器人。模擬／真錢可以直接 /mode 切。"
       ].join("\n"));
     },
 
@@ -493,6 +583,34 @@ export function createBot({ cli, store, trader, cfg = config }){
             `每 ${Math.round(cfg.timing.scanIntervalSec / 60)} 分鐘掃一次，一輪最多買一筆。`,
             "",
             "隨時可以 /auto off 停掉，/why 看它現在為什麼買或不買。"
+          ].join("\n"));
+        }
+      }
+
+      if(action === "mode"){
+        if(a === "cancel") return say("已取消，維持模擬模式。");
+        if(a === "live"){
+          /* 按鈕可能在口袋裡被按到，而且訊息會留在對話裡 ——
+             所以每個前置條件在真正切換的這一刻要再驗一次，不能只信按鈕存在。 */
+          if(process.env.GMGN_ALLOW_AUTOMATED_TRADES !== "1"){
+            return say("🚫 啟動時沒開 GMGN_ALLOW_AUTOMATED_TRADES，不能切。");
+          }
+          if(!cfg.gmgn.walletAddress) return say("🚫 還沒設定 GMGN_WALLET_ADDRESS。");
+          if(!cfg.mode.dryRun) return say("已經是真錢模式了。");
+
+          cfg.mode.dryRun = false;
+          /* 不讓「切到真錢」和「開始自動買」在同一個動作裡發生。
+             要自己下單，你得再按一次 /auto on —— 兩個決定分開做。 */
+          store.disarmAuto("切換到真錢模式");
+          log.warn("切換到真錢模式", { by: "telegram" });
+
+          return say([
+            "💸 已切到真錢模式。",
+            "",
+            "自動交易已解除武裝 —— 要它自己買，請另外 /auto on。",
+            "在那之前，所有買入都要你按確認鍵。",
+            "",
+            "/panic 隨時全部賣光並停止交易。"
           ].join("\n"));
         }
       }
