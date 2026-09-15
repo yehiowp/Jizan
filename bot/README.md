@@ -39,9 +39,12 @@
 ```bash
 cd bot
 npm install
-cp .env.example .env
-# 編輯 .env：填 TELEGRAM_TOKEN、OWNER_ID、GMGN_WALLET_ADDRESS
+npm run setup
 ```
+
+`npm run setup` 是問答式的設定精靈，只問三題（Telegram Token、你的 Telegram ID、錢包位址），填錯會當場擋下來，`.env` 裡其他設定和註解原樣保留。手機上請用這個 —— 用 nano 編設定檔，開錯目錄時它只會開一個空白檔案，不會告訴你開錯了。
+
+要手動編也行：`cp .env.example .env`，然後填 `TELEGRAM_TOKEN`、`OWNER_ID`、`GMGN_WALLET_ADDRESS`。
 
 ## 卡住了就先跑這個
 

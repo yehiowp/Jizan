@@ -1415,6 +1415,55 @@ function freshStore(){
   assert("設 0 就不啟動也不報錯", ok);
 }
 
+/* ═══ 設定精靈 ═══
+   這支的價值全在「不要把使用者既有的設定弄壞」，所以測的是合併行為，
+   不是問答流程（問答要 TTY，測不了，程式本身也擋掉了管線輸入）。 */
+{
+  const { applyEnv, parseEnv, cleanInput, mask, QUESTIONS } =
+    await import("../setup.mjs");
+
+  const base = [
+    "# 註解要留著",
+    "TELEGRAM_TOKEN=舊的",
+    "OWNER_ID=111",
+    "",
+    "# 使用者自己調過的參數",
+    "POSITION_USD=7",
+    "DRY_RUN=true"
+  ].join("\n");
+
+  const out = applyEnv(base, { TELEGRAM_TOKEN: "新的", OWNER_ID: "222" });
+
+  assert("替換問到的欄位", out.includes("TELEGRAM_TOKEN=新的") && out.includes("OWNER_ID=222"));
+  assert("註解原樣保留", out.includes("# 註解要留著") && out.includes("# 使用者自己調過的參數"));
+  assert("沒問到的設定不動", out.includes("POSITION_USD=7") && out.includes("DRY_RUN=true"), out);
+  assert("不留下舊值", !out.includes("TELEGRAM_TOKEN=舊的"));
+
+  /* 骨架裡沒有這個鍵時要補在後面，不能默默丟掉 */
+  const added = applyEnv("DRY_RUN=true", { OWNER_ID: "333" });
+  assert("骨架缺的鍵會補上", added.includes("OWNER_ID=333"), added);
+
+  assert("讀得回既有值", parseEnv("A=1\n# x\nB = 2 ").B === "2");
+
+  /* 手機貼上常常連鍵名、引號一起貼進來 */
+  assert("貼到 KEY= 也吃得下", cleanInput("OWNER_ID=12345", "OWNER_ID") === "12345");
+  assert("引號會被剝掉", cleanInput('"12345"', "OWNER_ID") === "12345");
+
+  const tok = QUESTIONS.find(q => q.key === "TELEGRAM_TOKEN");
+  const own = QUESTIONS.find(q => q.key === "OWNER_ID");
+  const wal = QUESTIONS.find(q => q.key === "GMGN_WALLET_ADDRESS");
+  assert("擋掉不是 token 的字串", tok.validate("abc") !== null);
+  assert("放行正常的 token", tok.validate("123456:AAHKlV2ccp62jjcPtMieMCHiEJV9FV14zdE") === null);
+  assert("OWNER_ID 不收 @ 開頭", own.validate("@someone") !== null);
+  assert("錢包可以留空", wal.validate("") === null);
+  assert("錢包擋掉亂填", wal.validate("not-an-address") !== null);
+  assert("EVM 位址可用", wal.validate("0x" + "a".repeat(40)) === null);
+
+  /* 憑證印回終端機等於幫截圖外洩它 */
+  const secret = "123456:AAHKlV2ccp62jjcPtMieMCHiEJV9FV14zdE";
+  assert("遮罩不會露出中段", !mask(secret).includes("MtieMC"), mask(secret));
+}
+
 console.log("");
 if(failures){
   console.log(`${failures} 項測試失敗`);

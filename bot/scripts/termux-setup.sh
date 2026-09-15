@@ -83,9 +83,12 @@ cat <<'DONE'
    螢幕跟 CPU 是兩回事：關螢幕不會停掉程式，把程式停掉的是 Android 的省電凍結。
    這是手機掛機最常見的死因，而且它不會崩潰 —— 它會安靜地什麼都不做。
 
-3. 填設定：
-     nano .env
-   要填 TELEGRAM_TOKEN、OWNER_ID。存檔是 Ctrl+O 然後 Enter，離開是 Ctrl+X。
+3. 填設定 —— 用問答式精靈，不要在手機上編檔案：
+     npm run setup
+   它只問三題，答錯會當場擋下來，其他設定原樣保留。
+   （硬要手動編也可以：nano .env，存檔 Ctrl+O 再 Enter，離開 Ctrl+X。
+     但要先確定自己在 bot 資料夾裡 —— 開錯目錄 nano 只會開一個空白檔，
+     不會跟你說你開錯了。）
 
    GMGN 憑證另外設（金鑰會存在這支手機上）：
      gmgn-cli config

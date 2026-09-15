@@ -7,6 +7,7 @@
   "main": "src/index.js",
   "scripts": {
     "start": "node src/index.js",
+    "setup": "node setup.mjs",
     "selftest": "node src/selftest.js",
     "test": "node test/run.js",
     "verify": "node src/verify-fields.js all",
