@@ -12,6 +12,7 @@ import path from "node:path";
 import { execFile } from "node:child_process";
 import { fileURLToPath } from "node:url";
 import { resolveCli } from "./src/resolve-cli.js";
+import { parseSleepTimeouts } from "./src/powercfg.js";
 
 const WIN = process.platform === "win32";
 const rows = [];
@@ -318,6 +319,40 @@ if(env.TELEGRAM_TOKEN){
     if(env.HEARTBEAT_HOURS === "0"){
       add("warn", "心跳", "關閉中（HEARTBEAT_HOURS=0）",
         "手機掛機時請打開（例如 12）。被凍結的程式不會跟你說它被凍結了，\n" +
+        "     定時心跳沒來才是你唯一會察覺的訊號。");
+    }
+  } else if(WIN){
+    /* Windows 上的同一種死法：電腦睡著，機器人就停了。
+       跟 Android 凍結一樣，它不崩潰、不留訊息，只是安靜地什麼都不做。 */
+    const q = await runCmd("powercfg", ["/query", "SCHEME_CURRENT", "SUB_SLEEP"], 15000);
+
+    if(q.missing || q.err){
+      add("info", "睡眠設定", "查不到（powercfg 沒回應）",
+        "手動確認：設定 → 系統 → 電源 → 讓電腦進入睡眠 → 永不");
+    } else {
+      const { sleepSec, hibernateSec: hiberSec } = parseSleepTimeouts(q.out);
+
+      const bad = [];
+      if(sleepSec > 0) bad.push(`睡眠 ${Math.round(sleepSec / 60)} 分鐘`);
+      if(hiberSec > 0) bad.push(`休眠 ${Math.round(hiberSec / 60)} 分鐘`);
+
+      if(sleepSec === null && hiberSec === null){
+        add("info", "睡眠設定", "解析不出 powercfg 的輸出",
+          "手動確認：設定 → 系統 → 電源 → 讓電腦進入睡眠 → 永不");
+      } else if(bad.length){
+        add("fail", "電腦會自己睡著", `插電時：${bad.join("、")}後`,
+          "睡著 = 機器人停擺（不會崩潰、不會通知你）。用系統管理員權限的 PowerShell：\n" +
+          "     powercfg /change standby-timeout-ac 0\n" +
+          "     powercfg /change hibernate-timeout-ac 0\n" +
+          "     ⚠️ 筆電闔上螢幕還是會睡：設定 → 系統 → 電源 → 闔上蓋子時 → 不進行動作");
+      } else {
+        add("ok", "電腦不會自己睡著", "插電時睡眠與休眠都設為永不");
+      }
+    }
+
+    if(env.HEARTBEAT_HOURS === "0"){
+      add("warn", "心跳", "關閉中（HEARTBEAT_HOURS=0）",
+        "掛著跑的時候請打開（例如 12）。機器人停掉時不會有人通知你，\n" +
         "     定時心跳沒來才是你唯一會察覺的訊號。");
     }
   }

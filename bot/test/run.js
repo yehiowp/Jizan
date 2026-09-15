@@ -1464,6 +1464,63 @@ function freshStore(){
   assert("遮罩不會露出中段", !mask(secret).includes("MtieMC"), mask(secret));
 }
 
+/* ═══ Windows 睡眠設定的解析 ═══
+   這段只有在 Windows 上才跑得到，所以在這裡用真實格式的輸出餵它。
+   關鍵是中文版 Windows 的 powercfg 輸出是 CP950，Node 會解成亂碼 ——
+   解析器必須完全不依賴任何一個中文字。 */
+{
+  const { parseSleepTimeouts, readAcSeconds, SLEEP_AFTER_GUID } =
+    await import("../src/powercfg.js");
+
+  const EN = [
+    "Power Scheme GUID: 381b4222-f694-41f0-9685-ff5bb260df2e  (Balanced)",
+    "  Subgroup GUID: 238c9fa8-0aad-41ed-83f4-97be242c8f20  (Sleep)",
+    "    Power Setting GUID: 29f6c1db-86da-48c5-9fdb-f2b67b1f44da  (Sleep after)",
+    "      Minimum Possible Setting: 0x00000000",
+    "      Maximum Possible Setting: 0xffffffff",
+    "      Possible Settings increment: 0x00000001",
+    "      Possible Settings units: Seconds",
+    "    Current AC Power Setting Index: 0x00000708",
+    "    Current DC Power Setting Index: 0x00000384",
+    "",
+    "    Power Setting GUID: 94ac6d29-73ce-41a6-809f-6363ba21b47e  (Allow hybrid sleep)",
+    "    Current AC Power Setting Index: 0x00000001",
+    "    Current DC Power Setting Index: 0x00000001",
+    "",
+    "    Power Setting GUID: 9d7815a6-7ee4-497e-8888-515a05f02364  (Hibernate after)",
+    "      Possible Settings units: Seconds",
+    "    Current AC Power Setting Index: 0x00000000",
+    "    Current DC Power Setting Index: 0x00000e10",
+  ].join("\n");
+
+  const en = parseSleepTimeouts(EN);
+  assert("讀到睡眠等待秒數", en.sleepSec === 1800, String(en.sleepSec));
+  assert("讀到休眠等待秒數（0=永不）", en.hibernateSec === 0, String(en.hibernateSec));
+
+  /* 中文版：GUID、AC/DC、0x 都還是 ASCII，中文那段就算變亂碼也不影響。
+     這裡刻意把說明文字換成亂碼，確認解析器沒有偷偷依賴它。 */
+  const CJK = EN
+    .replace(/\(Sleep after\)/, "(���ߦ��)")
+    .replace(/\(Hibernate after\)/, "(���~�ɶ�)")
+    .replace(/Current AC Power Setting Index/g, "�ثe�� AC �q�]�w����")
+    .replace(/Current DC Power Setting Index/g, "�ثe�� DC �q�]�w����");
+  const cjk = parseSleepTimeouts(CJK);
+  assert("亂碼輸出照樣讀得到睡眠秒數", cjk.sleepSec === 1800, String(cjk.sleepSec));
+  assert("亂碼輸出照樣讀得到休眠秒數", cjk.hibernateSec === 0, String(cjk.hibernateSec));
+
+  /* 找不到不等於 0 —— 回 0 會讓診斷報「已設為永不」，是最糟的錯法 */
+  assert("找不到設定項回 null", parseSleepTimeouts("完全無關的輸出").sleepSec === null);
+  assert("有 GUID 但沒有 AC 那行也回 null",
+    readAcSeconds(`Power Setting GUID: ${SLEEP_AFTER_GUID}  (x)`, SLEEP_AFTER_GUID) === null);
+
+  /* 取的必須是 AC（插電）那一行，不是 DC（電池） */
+  assert("拿的是 AC 不是 DC", en.sleepSec !== 900, String(en.sleepSec));
+
+  /* GUID 裡的小寫 ac（94ac6d29）不能被當成 AC 欄位 */
+  assert("不會誤中 GUID 裡的小寫 ac",
+    readAcSeconds(EN, "94ac6d29-73ce-41a6-809f-6363ba21b47e") === 1, String(readAcSeconds(EN, "94ac6d29-73ce-41a6-809f-6363ba21b47e")));
+}
+
 console.log("");
 if(failures){
   console.log(`${failures} 項測試失敗`);

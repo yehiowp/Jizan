@@ -314,6 +314,31 @@ pkg install -y git && git clone -b claude/meme-money-program-4sb7gn https://gith
 
 ⚠️ 手機上會放著 GMGN 的 API Key 和簽名私鑰。手機掉了等於鑰匙掉了 —— 設好螢幕鎖，只放賠得起的金額。
 
+### 放在電腦上 24 小時跑（Windows）
+
+不用裝任何東西，但要先擋掉「電腦自己睡著」—— 那是 Windows 上跟 Android 凍結一模一樣的死法：不崩潰、不留訊息，就是安靜地停擺。
+
+用**系統管理員**的 PowerShell：
+
+```powershell
+powercfg /change standby-timeout-ac 0
+powercfg /change hibernate-timeout-ac 0
+```
+
+筆電闔上螢幕還是會睡，要另外改：設定 → 系統 → 電源 → **闔上蓋子時 → 不進行動作**。
+
+`node doctor.mjs` 在 Windows 上會直接讀 `powercfg` 驗證這兩項，沒設好會標紅。
+
+然後用守門員啟動，程式當掉會自動重啟、紀錄檔超過 5MB 會輪替：
+
+```powershell
+powershell -ExecutionPolicy Bypass -File scripts\run-forever.ps1
+```
+
+紀錄檔在 `%USERPROFILE%\gmgn-bot.log`。要停就在那個視窗按 Ctrl+C。
+
+⚠️ **同一個錢包同時只能有一個機器人在跑。** 帳本存在各自的 `data/state.json`，兩個行程互相看不見 —— 部位數上限、在場資金上限、單日虧損上限、停機線會各算各的，實際風險變成兩倍。而且 GMGN 的流量額度是綁 API Key 的，兩邊共用一把 Key 會一起被 429 封。
+
 ### 無人看管的三道保險
 
 手機放家裡沒人看的話，這三件事決定它是「在跑」還是「你以為它在跑」：
