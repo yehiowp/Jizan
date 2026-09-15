@@ -652,13 +652,25 @@ function freshStore(){
       auto.autoGate(plan).some(b => b.includes("降級")), JSON.stringify(auto.autoGate(plan)));
   }
 
-  /* 報價失敗 → 自動模式不買 */
+  /* 報價失敗：真錢模式硬擋，模擬模式放行。
+     只有讀取權限的 API Key（沒綁交易錢包）本來就拿不到報價，
+     模擬模式再擋下去就整個驗證週都跑不起來了。 */
   {
-    const { auto } = autoSetup();
-    assert("報價失敗時自動模式不買",
-      auto.autoGate({ coinScore: 99, quoteError: "timeout",
-        gate: { warnings: [], downgrade: [], blocks: [], metrics: { honeypot: false, rugRatio: 0.04 } } })
-        .some(b => b.includes("報價失敗")));
+    const planWithQuoteError = { coinScore: 99, quoteError: "timeout",
+      gate: { warnings: [], downgrade: [], blocks: [], metrics: { honeypot: false, rugRatio: 0.04 } } };
+
+    const liveCfg = JSON.parse(JSON.stringify(autoCfg));
+    liveCfg.mode.dryRun = false;
+    const liveAuto = createAutoTrader({ store: freshStore(), trader: null,
+      say: () => Promise.resolve(), cfg: liveCfg });
+    assert("真錢模式：報價失敗就不買",
+      liveAuto.autoGate(planWithQuoteError).some(b => b.includes("報價失敗")),
+      JSON.stringify(liveAuto.autoGate(planWithQuoteError)));
+
+    const { auto } = autoSetup();   // autoCfg.mode.dryRun === true
+    assert("模擬模式：報價失敗不擋（否則整個模擬週跑不起來）",
+      !auto.autoGate(planWithQuoteError).some(b => b.includes("報價失敗")),
+      JSON.stringify(auto.autoGate(planWithQuoteError)));
   }
 
   /* 注意事項太多 → 不買 */

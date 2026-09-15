@@ -183,21 +183,10 @@ if(isMain){
       { timeout: 45000, maxBuffer: 8e6, shell: !!CLI.needsShell, stdio: ["ignore", "pipe", "pipe"] },
       (e, out) => res(e ? null : out)));
 
-    /* 沒給地址就自己去熱榜抓一顆 —— 少一個手動複製貼上的步驟，
-       也確保驗到的是一顆真的在交易的幣。 */
+    /* 地址沿用下面 trending 那一次的回應，不另外打一次 API。
+       原本多打一次的寫法會白白多消耗一次限流額度，而且兩次回應可能不一致 ——
+       實測就發生過 trending 驗得好好的、地址卻抓不到的情況。 */
     let addr = process.argv[3];
-    if(!addr){
-      const out = await run(["market", "trending", "--chain", chain, "--limit", "1", "--raw"]);
-      try {
-        const d = JSON.parse(out ?? "null");
-        const data = d?.data ?? d;
-        const list = Array.isArray(data) ? data
-          : ["rank", "list", "tokens", "coins"].map(k => data?.[k]).find(Array.isArray)
-            ?? Object.values(data ?? {}).filter(Array.isArray).flat();
-        addr = list?.[0]?.address;
-        if(addr) console.log(`（沒給地址，自動用熱榜第一名：${list[0].symbol ?? "?"} ${addr}）`);
-      } catch {}
-    }
 
     const jobs = [
       ["gas", ["gas-price", "--chain", chain, "--raw"]],
@@ -212,11 +201,28 @@ if(isMain){
     for(const [k, args] of jobs){
       const out = await run(args);
       if(!out){ console.log(`\n── ${SPECS[k].label} ──\n❌ 指令執行失敗（API Key 設了嗎？IPv6 關了嗎？）`); worst = 1; continue; }
+      let parsed = null;
       try {
-        const r = verify(k, JSON.parse(out));
+        parsed = JSON.parse(out);
+        const r = verify(k, parsed);
         print(r);
         if(r.criticalMissing) worst = 1;
       } catch(e){ console.log(`\n── ${SPECS[k].label} ──\n❌ 解析失敗：${e.message}`); worst = 1; }
+
+      /* 從剛驗過的 trending 回應裡挑一顆幣，接著驗 token info / security */
+      if(k === "trending" && !addr && parsed){
+        const data = parsed?.data ?? parsed;
+        const list = Array.isArray(data) ? data
+          : ["rank", "list", "tokens", "coins"].map(x => data?.[x]).find(Array.isArray)
+            ?? Object.values(data ?? {}).filter(Array.isArray).flat();
+        const first = list?.[0];
+        if(first?.address){
+          addr = first.address;
+          console.log(`\n（用熱榜第一名繼續驗：${first.symbol ?? "?"} ${addr}）`);
+          jobs.push(["info", ["token", "info", "--chain", chain, "--address", addr, "--raw"]]);
+          jobs.push(["security", ["token", "security", "--chain", chain, "--address", addr, "--raw"]]);
+        }
+      }
     }
     if(!addr) console.log("\nℹ️  抓不到代幣地址，跳過 token info / security。可以手動給：npm run verify -- <代幣地址>");
     process.exit(worst);

@@ -211,7 +211,12 @@ if(env.TELEGRAM_TOKEN){
       const addrs = [...txt.matchAll(/"([1-9A-HJ-NP-Za-km-z]{32,44})"/g)].map(m => m[1]);
       const bal = parseFloat(String(txt.match(/"balance"\s*:\s*"?([\d.]+)/)?.[1] ?? "NaN"));
 
-      if(addrs.length){
+      /* 只有讀取權限的 API Key 不會綁交易錢包，回傳就是 {"wallets":[]}。
+         那是正常狀態，不是解析失敗 —— 講清楚它代表什麼，以及會影響什麼。 */
+      if(Array.isArray(data?.wallets) && data.wallets.length === 0){
+        add("info", "交易錢包", "沒有綁定（這把 API Key 只有讀取權限）",
+          "模擬模式照常可用。要真的下單得回 GMGN 綁 2FA、開「允許交易」、選一個交易錢包，再建一把新 Key。");
+      } else if(addrs.length){
         const a = addrs[0];
         add("ok", "綁定錢包", a);
         if(env.GMGN_WALLET_ADDRESS && env.GMGN_WALLET_ADDRESS !== a){

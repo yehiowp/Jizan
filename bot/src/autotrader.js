@@ -63,7 +63,11 @@ export function createAutoTrader({ store, trader, say, cfg = config }){
     if(g.metrics.rugRatio == null){
       blocks.push("拿不到 rug_ratio，自動模式不賭未知");
     }
-    if(plan.quoteError){
+    /* 報價失敗在真錢模式是硬擋 —— 看不到成交預估就不下單。
+       但模擬模式下根本沒有東西要成交，而且只有讀取權限的 API Key
+       （沒綁交易錢包）本來就拿不到報價。這時候擋下等於整個模擬週跑不起來，
+       那才是真的損失：你會失去唯一一次「用假錢驗證這套打法」的機會。 */
+    if(plan.quoteError && !cfg.mode.dryRun){
       blocks.push(`報價失敗（${plan.quoteError}），不在看不到成交預估的情況下下單`);
     }
     return blocks;
