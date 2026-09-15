@@ -15,6 +15,7 @@ export function createBot({ cli, store, trader, cfg = config }){
   const pendingPlans = new Map();
   let autoTrader = null;   // 由 index.js 在建立後掛上來（它需要 say，而 say 來自這裡）
   let narrative = null;
+  let pendingArmHours = null;   // /auto on <小時> 指定的時數，等按下確認才生效
 
   /* say 永遠不 reject。Telegram 掛掉、網路斷一下都不該讓對帳或自動交易的
      迴圈中途炸掉 —— 那會變成「訊息沒送出」升級成「後面的部位沒被檢查」。 */
@@ -101,7 +102,7 @@ export function createBot({ cli, store, trader, cfg = config }){
         autoLine(),
         "",
         "/hot [1h] 現在最熱的題材（IP）",
-        "/auto on 武裝自動交易　/auto off 解除",
+        "/auto on [小時] 武裝自動交易　/auto off 解除",
         "/why 它現在會買什麼、為什麼不買",
         "/scan 掃描候選",
         "/check <地址> 只做檢查不下單",
@@ -282,7 +283,7 @@ export function createBot({ cli, store, trader, cfg = config }){
     /* /auto            看狀態
        /auto on         武裝（要再按一次確認鍵）
        /auto off        解除 */
-    async auto(sub){
+    async auto(sub, hoursArg){
       if(!cfg.mode.autoBuy && sub === "on"){
         return say("自動交易在 .env 裡是關的。要開的話設定 AUTO_BUY=true 再重啟機器人。");
       }
@@ -294,10 +295,20 @@ export function createBot({ cli, store, trader, cfg = config }){
 
       if(sub === "on"){
         const a = cfg.auto;
+        /* 可以指定比預設更短的時數。出門前、睡前武裝時，
+           「12 小時」對一個你看不到的自動下單程式來說太長了。 */
+        const requested = hoursArg ? parseFloat(hoursArg) : a.armHours;
+        const hours = Math.min(Math.max(Number.isFinite(requested) && requested > 0 ? requested : a.armHours, 0.25), a.armHours);
+        pendingArmHours = hours;
+
         return say([
           "⚠️ 武裝自動交易",
           "",
-          `武裝後 ${a.armHours} 小時內，機器人會自己掃描、自己選幣、自己下單，不再問你。`,
+          `武裝後 ${hours} 小時內，機器人會自己掃描、自己選幣、自己下單，不再問你。`,
+          hours !== a.armHours ? `（你指定了 ${hours} 小時，上限是 ${a.armHours}）` : "",
+          "",
+          "⚠️ 這是跑在這台電腦上的。手機關機或沒網路，它照樣會買 ——",
+          "　 你只是看不到通知而已。電腦關機或睡眠才會真的停下來。",
           "",
           "它會受到的限制：",
           `· 分數要 ≥ ${a.minScore}（手動模式只要 ${cfg.filter.minScore}）`,
@@ -312,10 +323,12 @@ export function createBot({ cli, store, trader, cfg = config }){
             ? "🧪 目前是模擬模式，它只會記帳不會花錢。"
             : "💸 目前是真錢模式。按下去之後它會在你沒看螢幕的時候花你的錢。",
           "",
-          `${a.armHours} 小時後武裝自動失效，要繼續得再按一次。`
-        ].join("\n"), {
+          `${hours} 小時後武裝自動失效，要繼續得再按一次。`,
+          "",
+          `想短一點：/auto on 2　（武裝 2 小時）`
+        ].filter(Boolean).join("\n"), {
           reply_markup: { inline_keyboard: [[
-            { text: `✅ 武裝 ${a.armHours} 小時`, callback_data: "arm:confirm" },
+            { text: `✅ 武裝 ${hours} 小時`, callback_data: "arm:confirm" },
             { text: "取消", callback_data: "arm:cancel" }
           ]] }
         });
@@ -465,7 +478,8 @@ export function createBot({ cli, store, trader, cfg = config }){
           if(!store.state.tradingEnabled){
             return say(`交易目前是停用狀態（${store.state.disabledReason}），先 /resume 再武裝。`);
           }
-          const armed = store.armAuto(cfg.auto.armHours);
+          const armed = store.armAuto(pendingArmHours ?? cfg.auto.armHours);
+          pendingArmHours = null;
           return say([
             `🤖 自動交易已武裝${cfg.mode.dryRun ? "（模擬模式）" : ""}`,
             `到期時間：${new Date(armed.armedUntil).toLocaleString("zh-TW")}`,
