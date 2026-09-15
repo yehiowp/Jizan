@@ -185,14 +185,18 @@ export function createCli({ bin = "gmgn-cli", execFileImpl = execFile, defaultTi
     /* 真正動錢的地方。conditionOrders 會把停損停利掛在 GMGN 伺服器端，
        機器人掛掉、你手機沒電，出場照樣會執行。 */
     async swap({ chain, from, inputToken, outputToken, amountRaw, percent, slippage,
-                 antiMev = true, priorityFeeSol, tipFee, conditionOrders, sellRatioType, yes = false }){
+                 antiMev = true, priorityFeeSol, gasPriceGwei, tipFee,
+                 conditionOrders, sellRatioType, yes = false }){
       const args = ["swap", "--chain", chain, "--from", from,
                     "--input-token", inputToken, "--output-token", outputToken];
       if(percent != null) args.push("--percent", percent);
       else args.push("--amount", String(amountRaw));
       if(slippage != null) args.push("--slippage", slippage);
       if(antiMev) args.push("--anti-mev");
+      /* 手續費旗標依鏈而異：sol 用 --priority-fee，EVM 用 --gas-price（gwei）。
+         給錯鏈的旗標會被 CLI 拒絕。 */
       if(priorityFeeSol != null) args.push("--priority-fee", priorityFeeSol);
+      if(gasPriceGwei != null) args.push("--gas-price", gasPriceGwei);
       if(tipFee != null) args.push("--tip-fee", tipFee);
       if(conditionOrders?.length){
         args.push("--condition-orders", JSON.stringify(conditionOrders));

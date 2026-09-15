@@ -1,14 +1,19 @@
-import { config, CURRENCY, buildConditionOrders } from "./config.js";
+import { config, CURRENCY, buildConditionOrders, chainTradable } from "./config.js";
 import { evaluate, sanitize, num } from "./score.js";
 import { evaluateGate } from "./gate.js";
 import { checkBuy } from "./risk.js";
 import { log } from "./log.js";
 
-const LAMPORTS = 1e9;
-
 export function createTrader({ cli, store, cfg = config }){
-  const chain = cfg.gmgn.chain;
-  const native = CURRENCY[chain]?.native ?? CURRENCY.sol.native;
+  /* 預設鏈，以及要掃描的所有鏈 */
+  const defaultChain = cfg.gmgn.chain;
+  const scanChains = cfg.gmgn.chains.length ? cfg.gmgn.chains : [defaultChain];
+
+  const spec = c => CURRENCY[c] ?? CURRENCY.sol;
+  const nativeOf = c => spec(c).native ?? CURRENCY.sol.native;
+  /* 最小單位換算依鏈而異：SOL 9 位、BNB/ETH 18 位。
+     寫死 1e9 的話，在 BSC 上下單金額會差十億倍。 */
+  const unitOf = c => Math.pow(10, nativeOf(c).decimals ?? 9);
 
   /* gas-price 同時給優先費三檔與原生幣美元價。
      ⚠️ Solana 的 *_prio_fee 三檔恆為 1（無意義佔位），照它算會變成 1 SOL。
@@ -16,53 +21,71 @@ export function createTrader({ cli, store, cfg = config }){
 
      快取 30 秒：SOL 價格與優先費在這個尺度內不會有意義的變化，
      但每次下單前多一個往返就是多幾百毫秒 —— 迷因幣的價格在那幾百毫秒裡會動。 */
-  let gasCache = null;
+  const gasCache = new Map();          // 依鏈各自快取
   const GAS_TTL_MS = 30000;
 
-  async function gasContext({ force = false } = {}){
-    if(!force && gasCache && Date.now() - gasCache.at < GAS_TTL_MS) return gasCache.value;
-    const g = await cli.gasPrice({ chain });
+  async function gasContext(c = defaultChain, { force = false } = {}){
+    const hit = gasCache.get(c);
+    if(!force && hit && Date.now() - hit.at < GAS_TTL_MS) return hit.value;
+
+    const g = await cli.gasPrice({ chain: c });
     const tier = cfg.exec.gasTier;
-    const prio = num(g?.[`${tier}_prio_fee_mixed`]);
     const nativeUsd = num(g?.native_token_usd_price);
-    if(!(nativeUsd > 0)) throw new Error("gas-price 沒給 native_token_usd_price，無法把美元換算成 SOL");
-    const value = {
-      nativeUsd,
-      priorityFeeSol: prio > 0 ? prio : 0.001,   // 拿不到就用文件裡 low 檔的實測值
-      estimateSec: num(g?.[`${tier}_estimate_time`])
-    };
-    gasCache = { at: Date.now(), value };
+    if(!(nativeUsd > 0)) throw new Error(`gas-price 沒給 native_token_usd_price（${c}），無法把美元換算成原生幣`);
+
+    const value = { nativeUsd, estimateSec: num(g?.[`${tier}_estimate_time`]) };
+
+    if(spec(c).feeStyle === "evm"){
+      /* EVM：檔位本身就是權威全額單價（wei），不要拿 base + prio 去拼。
+         換成 gwei 給 --gas-price 用，並套用該鏈的最低值。 */
+      const wei = num(g?.[tier]);
+      const gwei = wei > 0 ? wei / 1e9 : 0;
+      value.gasPriceGwei = Math.max(gwei, spec(c).minGasPriceGwei ?? 0.01);
+    } else {
+      /* Solana：*_prio_fee 三檔恆為佔位值 1，只能讀 *_prio_fee_mixed */
+      const prio = num(g?.[`${tier}_prio_fee_mixed`]);
+      value.priorityFeeSol = prio > 0 ? prio : 0.001;
+    }
+
+    gasCache.set(c, { at: Date.now(), value });
     return value;
   }
 
   return {
     /* ── 掃描：trending + 熱搜兩個來源 → 評分 → 過濾。
        兩個來源平行抓，其中一個掛掉不影響另一個。 ── */
-    async scan({ limit = 100, includeHotSearch = true } = {}){
-      const [trendRows, hotRows] = await Promise.all([
-        cli.trending({
-          chain,
-          interval: cfg.filter.interval,
-          limit,
-          /* 伺服器端先濾掉一部分，省請求也省得自己判 */
-          minLiquidity: cfg.filter.minDepthUsd * 2,   // trending 的 liquidity 是兩側之和
-          minSwaps: 10,
-          filters: chain === "sol" ? ["renounced", "not_wash_trading"] : ["not_honeypot"]
-        }).catch(e => { if(e.code === "RATE_LIMIT") throw e; return []; }),
-        includeHotSearch
-          ? cli.hotSearches({ chain, interval: cfg.filter.interval, limit,
-                              minLiquidity: cfg.filter.minDepthUsd * 2 })
-              .catch(e => { if(e.code === "RATE_LIMIT") throw e; return []; })
-          : Promise.resolve([])
-      ]);
+    async scan({ limit = 100, includeHotSearch = true, chains = scanChains } = {}){
+      /* 每條鏈各抓 trending + 熱搜，全部平行。
+         其中一條掛掉不影響其他條；任何一條限流就整輪停手。 */
+      const perChain = await Promise.all(chains.map(async c => {
+        const [trendRows, hotRows] = await Promise.all([
+          cli.trending({
+            chain: c,
+            interval: cfg.filter.interval,
+            limit,
+            /* 伺服器端先濾掉一部分，省請求也省得自己判 */
+            minLiquidity: cfg.filter.minDepthUsd * 2,   // trending 的 liquidity 是兩側之和
+            minSwaps: 10,
+            filters: c === "sol" ? ["renounced", "not_wash_trading"] : ["not_honeypot"]
+          }).catch(e => { if(e.code === "RATE_LIMIT") throw e; return []; }),
+          includeHotSearch
+            ? cli.hotSearches({ chain: c, interval: cfg.filter.interval, limit,
+                                minLiquidity: cfg.filter.minDepthUsd * 2 })
+                .catch(e => { if(e.code === "RATE_LIMIT") throw e; return []; })
+            : Promise.resolve([])
+        ]);
+        /* 同一顆幣可能同時上兩個榜，用地址去重。跨鏈時要連鏈一起當 key ——
+           不同鏈上的地址格式不同，但不保證永遠不會撞。 */
+        return [...trendRows, ...hotRows]
+          .filter(r => r?.address)
+          .map(r => ({ ...r, chain: r.chain ?? c, _scanChain: c }));
+      }));
 
-      /* 同一顆幣可能同時上兩個榜，用地址去重 */
-      const rows = [...new Map([...trendRows, ...hotRows]
-        .filter(r => r?.address)
-        .map(r => [r.address, r])).values()];
+      const rows = [...new Map(perChain.flat()
+        .map(r => [`${r._scanChain}:${r.address}`, r])).values()];
 
       const coins = rows
-        .map(r => evaluate(r, { minDepthUsd: cfg.filter.minDepthUsd, chain }))
+        .map(r => evaluate(r, { minDepthUsd: cfg.filter.minDepthUsd, chain: r._scanChain }))
         .sort((a, b) => b.score - a.score);
 
       const cooldownMs = cfg.filter.alertCooldownHours * 3600 * 1000;
@@ -80,44 +103,54 @@ export function createTrader({ cli, store, cfg = config }){
     /* ── 只驗證、不報價。
        報價（order quote）權重是 2，而且只有真的要買的那一顆才需要，
        放在驗證階段等於每個被刷掉的候選都白付一次往返。 ── */
-    async vet({ address, usdAmount = cfg.risk.positionUsd, coin = null }){
+    async vet({ address, usdAmount = cfg.risk.positionUsd, coin = null, chain: c = coin?.chain ?? defaultChain }){
       const [info, security] = await Promise.all([
-        cli.tokenInfo({ chain, address }),
-        cli.tokenSecurity({ chain, address })
+        cli.tokenInfo({ chain: c, address }),
+        cli.tokenSecurity({ chain: c, address })
       ]);
 
       const gate = evaluateGate({
-        info, security, chain,
+        info, security, chain: c,
         minDepthUsd: cfg.filter.minDepthUsd,
         positionUsd: usdAmount
       });
       /* 風控閘門（部位上限、單日虧損、停機線）跟幣本身無關，一樣要過 */
       const riskCheck = checkBuy({ store, coin, usdAmount, cfg });
 
+      /* 沒有可靠幣種地址的鏈：掃描分析照常，但不准下單 */
+      const tradable = chainTradable(c);
+      const blocks = [...gate.blocks, ...riskCheck.reasons];
+      if(!tradable.ok) blocks.push(tradable.reason);
+
       return {
-        address, coin, info, security, gate, riskCheck,
+        address, coin, info, security, gate, riskCheck, chain: c,
         symbol: sanitize(info?.symbol ?? coin?.symbol ?? "?"),
-        pass: gate.pass && riskCheck.ok,
-        reasons: [...gate.blocks, ...riskCheck.reasons]
+        pass: gate.pass && riskCheck.ok && tradable.ok,
+        reasons: blocks
       };
     },
 
     /* ── 買入前的完整檢查（含報價）。不動錢。
        已經 vet 過的話把結果傳進來，就不會重打 info/security。 ── */
-    async prepareBuy({ address, usdAmount = cfg.risk.positionUsd, coin = null, vetted = null }){
-      const v = vetted ?? await this.vet({ address, usdAmount, coin });
+    async prepareBuy({ address, usdAmount = cfg.risk.positionUsd, coin = null, vetted = null,
+                       chain: chainArg = coin?.chain ?? defaultChain }){
+      const v = vetted ?? await this.vet({ address, usdAmount, coin, chain: chainArg });
+      const c = v.chain ?? chainArg;
       const { info, gate, riskCheck } = v;
+      const native = nativeOf(c);
+      const tradable = chainTradable(c);
 
-      const gas = await gasContext();
-      const amountRaw = Math.round(usdAmount / gas.nativeUsd * LAMPORTS);
+      const gas = await gasContext(c);
+      /* 依鏈的小數位換算 —— SOL 是 9 位、BNB/ETH 是 18 位 */
+      const amountRaw = Math.round(usdAmount / gas.nativeUsd * unitOf(c));
       if(!(amountRaw > 0)) throw new Error("換算出來的下單數量是 0");
 
       let quote = null;
       let quoteError = null;
-      if(gate.pass && riskCheck.ok){
+      if(gate.pass && riskCheck.ok && tradable.ok){
         try {
           quote = await cli.quote({
-            chain,
+            chain: c,
             from: cfg.gmgn.walletAddress,
             inputToken: native.address,
             outputToken: address,
@@ -133,15 +166,19 @@ export function createTrader({ cli, store, cfg = config }){
       const conditionOrders = buildConditionOrders(cfg);
 
       return {
-        chain,
+        chain: c,
+        nativeSymbol: native.symbol,
+        tradable,
         address,
         symbol: sanitize(info?.symbol ?? coin?.symbol ?? "?"),
         name: sanitize(info?.name ?? coin?.name ?? ""),
         usdAmount,
         amountRaw,
-        solAmount: amountRaw / LAMPORTS,
+        nativeAmount: amountRaw / unitOf(c),
+        solAmount: amountRaw / unitOf(c),     // 舊名稱，維持相容
         nativeUsd: gas.nativeUsd,
-        priorityFeeSol: gas.priorityFeeSol,
+        priorityFeeSol: gas.priorityFeeSol,   // sol 專用，EVM 上是 undefined
+        gasPriceGwei: gas.gasPriceGwei,       // EVM 專用
         tipFeeSol: cfg.exec.tipFeeSol,
         slippagePct: cfg.exec.slippagePct,
         price,
@@ -152,7 +189,7 @@ export function createTrader({ cli, store, cfg = config }){
         riskCheck,
         quote,
         quoteError,
-        canExecute: gate.pass && riskCheck.ok,
+        canExecute: gate.pass && riskCheck.ok && tradable.ok,
         createdAt: Date.now()
       };
     },
@@ -177,13 +214,15 @@ export function createTrader({ cli, store, cfg = config }){
       const res = await cli.swap({
         chain: plan.chain,
         from: cfg.gmgn.walletAddress,
-        inputToken: native.address,
+        inputToken: nativeOf(plan.chain).address,
         outputToken: plan.address,
         amountRaw: plan.amountRaw,
         slippage: plan.slippagePct,
-        antiMev: cfg.exec.antiMev,
-        /* SOL 上掛 condition-orders 時，priority-fee 與 tip-fee 是必填 */
+        /* base 不支援防夾，傳了會被拒絕 */
+        antiMev: cfg.exec.antiMev && spec(plan.chain).antiMev !== false,
+        /* 手續費旗標依鏈而異。SOL 上掛 condition-orders 時 priority-fee 與 tip-fee 必填 */
         priorityFeeSol: plan.priorityFeeSol,
+        gasPriceGwei: plan.gasPriceGwei,
         tipFee: plan.tipFeeSol,
         conditionOrders: plan.conditionOrders,
         sellRatioType: cfg.exec.sellRatioType,
@@ -234,10 +273,10 @@ export function createTrader({ cli, store, cfg = config }){
         chain: position.chain,
         from: cfg.gmgn.walletAddress,
         inputToken: position.tokenAddress,
-        outputToken: native.address,
+        outputToken: nativeOf(position.chain).address,
         percent,                       // 賣出用 --percent，input_token 不是貨幣才合法
         slippage: cfg.exec.slippagePct,
-        antiMev: cfg.exec.antiMev,
+        antiMev: cfg.exec.antiMev && spec(position.chain).antiMev !== false,
         yes: true
       });
 
@@ -265,7 +304,7 @@ export function createTrader({ cli, store, cfg = config }){
       const out = [];
       for(const pos of store.openPositions()){
         try {
-          const info = await cli.tokenInfo({ chain: pos.chain, address: pos.tokenAddress });
+          const info = await cli.tokenInfo({ chain: pos.chain ?? defaultChain, address: pos.tokenAddress });
           const price = num(info?.price?.price);
           if(price > 0){
             store.updatePosition(pos.id, { lastPrice: price, lastCheckedAt: Date.now() });
@@ -287,6 +326,7 @@ export function createTrader({ cli, store, cfg = config }){
     return store.addPosition({
       id: `${Date.now()}-${Math.random().toString(36).slice(2, 7)}`,
       chain: plan.chain,
+      nativeSymbol: plan.nativeSymbol,
       tokenAddress: plan.address,
       symbol: plan.symbol,
       name: plan.name,

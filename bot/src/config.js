@@ -16,13 +16,58 @@ function bool(key, fallback){
 }
 
 /* 幣種地址照 gmgn-swap 的 Chain Currencies 表抄，絕不憑記憶打。
-   打錯一個字元（…111 vs …112）會得到 "jupiter has no route" 這種看不出原因的錯誤。 */
+   打錯一個字元（…111 vs …112）會得到 "jupiter has no route" 這種看不出原因的錯誤。
+
+   tradable:false 代表「可以掃描分析，但不准下單」—— 官方幣種表沒有列出那條鏈的
+   幣種地址，猜一個等於拿你的錢去賭我記錯沒有。 */
 export const CURRENCY = {
   sol: {
     native: { symbol: "SOL", address: "So11111111111111111111111111111111111111112", decimals: 9 },
-    usdc:   { symbol: "USDC", address: "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v", decimals: 6 }
+    usdc:   { symbol: "USDC", address: "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v", decimals: 6 },
+    feeStyle: "sol",      // --priority-fee + --tip-fee（掛條件單時兩者必填）
+    antiMev: true,
+    tradable: true
+  },
+  bsc: {
+    native: { symbol: "BNB", address: "0x0000000000000000000000000000000000000000", decimals: 18 },
+    usdc:   { symbol: "USDC", address: "0x8ac76a51cc950d9822d68b83fe1ad97b32cd580d", decimals: 18 },
+    feeStyle: "evm",      // --gas-price（gwei，≥0.05）+ --tip-fee（≥0.000001 BNB）
+    minGasPriceGwei: 0.05,
+    antiMev: true,
+    tradable: true
+  },
+  base: {
+    native: { symbol: "ETH", address: "0x0000000000000000000000000000000000000000", decimals: 18 },
+    usdc:   { symbol: "USDC", address: "0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913", decimals: 6 },
+    feeStyle: "evm",
+    minGasPriceGwei: 0.01,
+    antiMev: false,       // 文件明講 base 不支援防夾
+    tradable: true
+  },
+  eth: {
+    native: { symbol: "ETH", address: "0x0000000000000000000000000000000000000000", decimals: 18 },
+    feeStyle: "evm",
+    minGasPriceGwei: 0.01,
+    antiMev: true,
+    tradable: true
+  },
+  robinhood: {
+    /* 官方 Chain Currencies 表沒有這條鏈的幣種地址。掃描與安全檢查照常，
+       但下單需要 --input-token，沒有可靠地址就不下單。 */
+    feeStyle: "unknown",
+    antiMev: false,
+    tradable: false,
+    untradableReason: "官方幣種表沒有列 robinhood 的幣種地址，沒有可靠的 --input-token 就不下單"
   }
 };
+
+/* 這條鏈能不能下單 */
+export function chainTradable(chain){
+  const c = CURRENCY[chain];
+  if(!c) return { ok: false, reason: `不認得的鏈：${chain}` };
+  if(!c.tradable) return { ok: false, reason: c.untradableReason ?? "這條鏈尚未支援下單" };
+  return { ok: true };
+}
 
 export const config = {
   telegram: {
@@ -33,7 +78,10 @@ export const config = {
     /* 錢包位址要跟 API Key 綁定的那個一致。私鑰不在這裡 ——
        私鑰由 gmgn-cli 自己從 ~/.config/gmgn/.env 讀，這支程式不讀、不存、不傳。 */
     walletAddress: str("GMGN_WALLET_ADDRESS", ""),
-    chain: str("CHAIN", "sol")
+    chain: str("CHAIN", "sol"),
+    /* 要掃描的鏈，逗號分隔。留空就只掃 CHAIN 那一條。
+       多鏈只影響掃描範圍；風控上限（部位數、在場資金、單日虧損）仍然是全域共用的。 */
+    chains: str("CHAINS", "").split(",").map(x => x.trim()).filter(Boolean)
   },
   mode: {
     dryRun: bool("DRY_RUN", true),
@@ -95,8 +143,15 @@ export function validateConfig(cfg = config){
   if(!/^\d+$/.test(cfg.telegram.ownerId)) errors.push("OWNER_ID 必須是純數字的 Telegram user id");
   if(!cfg.mode.dryRun && !cfg.gmgn.walletAddress) errors.push("DRY_RUN=false 時必須設定 GMGN_WALLET_ADDRESS");
 
-  if(cfg.gmgn.chain !== "sol"){
-    warnings.push(`目前只在 sol 上完整測過。CHAIN=${cfg.gmgn.chain} 的稅率／權限欄位語意不同，風險自負`);
+  const scanChains = cfg.gmgn.chains.length ? cfg.gmgn.chains : [cfg.gmgn.chain];
+  for(const c of scanChains){
+    if(!CURRENCY[c]){ errors.push(`不認得的鏈：${c}（可用：${Object.keys(CURRENCY).join(" / ")}）`); continue; }
+    if(!CURRENCY[c].tradable){
+      warnings.push(`${c}：${CURRENCY[c].untradableReason} —— 會掃描與通知，但不會下單`);
+    }
+    if(c !== "sol"){
+      warnings.push(`${c} 的欄位語意跟 sol 不同（EVM 看 is_renounced，sol 看 renounced_mint），實際下單前先用 npm run verify 驗過`);
+    }
   }
 
   const r = cfg.risk;

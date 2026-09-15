@@ -63,7 +63,7 @@ export function createBot({ cli, store, trader, cfg = config }){
   /* ── 訊息組裝 ── */
   function coinSummary(c){
     return [
-      `${c.grade} ${c.score}/100  ${c.symbol}`,
+      `${c.grade} ${c.score}/100  ${c.symbol}　[${c.chain}]`,
       `${c.name || "-"}`,
       `價格 ${c.price} ｜ 深度 ${usd(c.depth)} ｜ 持有人 ${c.holders}`,
       `1h ${pct(c.ch1h)} ｜ 5m ${pct(c.ch5m)} ｜ rug ${c.rugRatio.toFixed(2)}`,
@@ -203,7 +203,7 @@ export function createBot({ cli, store, trader, cfg = config }){
         const move = p.entryPrice > 0 ? (p.lastPrice / p.entryPrice - 1) * 100 : 0;
         const unreal = p.costUsd * (move / 100);
         await say([
-          `${p.symbol}${p.dryRun ? "（模擬）" : ""}`,
+          `${p.symbol}${p.chain && p.chain !== cfg.gmgn.chain ? `　[${p.chain}]` : ""}${p.dryRun ? "（模擬）" : ""}`,
           `成本 ${usd(p.costUsd)}　進場 ${p.entryPrice}`,
           `現價 ${p.lastPrice}　${pct(move)}　未實現 ${usd(unreal)}`,
           `停損 ${p.stopPrice.toExponential(3)}　停利 ${p.targetPrice.toExponential(3)}`,
@@ -260,7 +260,8 @@ export function createBot({ cli, store, trader, cfg = config }){
     async config(){
       await say([
         modeLine(),
-        `鏈 ${cfg.gmgn.chain}　錢包 ${cfg.gmgn.walletAddress || "未設定"}`,
+        `掃描鏈 ${(cfg.gmgn.chains.length ? cfg.gmgn.chains : [cfg.gmgn.chain]).join(" / ")}`,
+        `錢包 ${cfg.gmgn.walletAddress || "未設定"}`,
         `本金 ${usd(cfg.risk.bankrollUsd)}　每筆 ${usd(cfg.risk.positionUsd)}`,
         `最多 ${cfg.risk.maxOpenPositions} 個部位　在場上限 ${usd(cfg.risk.maxDeployedUsd)}`,
         `停損 ${cfg.risk.stopPct}%　停利 ${(cfg.risk.stopPct * cfg.risk.targetR).toFixed(0)}%`,
