@@ -17,14 +17,21 @@ export class GmgnCliError extends Error {
    代幣名稱/符號來自鏈上，是攻擊者可以任意填的欄位，拼進 shell 就等於把主機送人。 */
 export function createCli({ bin = "gmgn-cli", execFileImpl = execFile, defaultTimeoutMs = 45000 } = {}){
 
-  function run(args, { timeoutMs = defaultTimeoutMs, allowNonZero = false } = {}){
+  /* withStatus: true 時一律回 { exitOk, stdout, stderr, json }，把離開碼原封不動交出去。
+     這是給「離開碼本身就是答案」的指令用的（例如 config --check：0 = 已設定，1 = 沒設定）。 */
+  function run(args, { timeoutMs = defaultTimeoutMs, allowNonZero = false, withStatus = false } = {}){
     const argv = args.map(String);
     return new Promise((resolve, reject) => {
       execFileImpl(bin, argv, {
         timeout: timeoutMs,
         maxBuffer: 8 * 1024 * 1024,
         /* 不繼承 shell，不帶 GMGN_ALLOW_AUTOMATED_TRADES 以外的東西 */
-        env: process.env
+        env: process.env,
+        /* stdin 關掉。gmgn-cli 的互動確認會從 tty 讀一個手打的 yes，
+           繼承 stdin 的話那個等待會一路卡到逾時，外面看起來就是整支程式死掉。
+           關掉之後它會立刻失敗並回報原因 —— 這正是我們要的：
+           機器人本來就不該去回答那個提示（人工確認在 Telegram）。 */
+        stdio: ["ignore", "pipe", "pipe"]
       }, (err, stdout, stderr) => {
         const out = String(stdout ?? "");
         const errOut = String(stderr ?? "");
@@ -67,12 +74,16 @@ export function createCli({ bin = "gmgn-cli", execFileImpl = execFile, defaultTi
           }));
         }
 
-        if(err && !allowNonZero){
+        if(err && !allowNonZero && !withStatus){
           return reject(new GmgnCliError(`gmgn-cli ${argv.join(" ")} 失敗`, { stderr: errOut || out }));
         }
 
         /* --raw 會輸出 JSON，但有些版本會混入提示行，所以抓第一個 JSON 區塊 */
         const parsed = extractJson(out);
+
+        if(withStatus){
+          return resolve({ exitOk: !err, exitCode: err?.code ?? 0, stdout: out, stderr: errOut, json: parsed });
+        }
         if(parsed === undefined){
           if(allowNonZero) return resolve({ ok: !err, stdout: out, stderr: errOut });
           return reject(new GmgnCliError("gmgn-cli 沒有回傳可解析的 JSON", { stderr: errOut || out }));
@@ -91,10 +102,18 @@ export function createCli({ bin = "gmgn-cli", execFileImpl = execFile, defaultTi
   return {
     run,
 
+    /* 官方文件：exit 0 = 已設定可以往下走，exit 1 = 要先設 API Key。
+       離開碼就是答案，所以一定要用 withStatus 把它取出來 ——
+       之前用 allowNonZero 會把非零碼吞掉，變成沒設 API Key 也回報「已設定」。 */
     async configCheck(){
       try {
-        await run(["config", "--check"], { allowNonZero: true, timeoutMs: 15000 });
-        return { ok: true };
+        const r = await run(["config", "--check"], { withStatus: true, timeoutMs: 15000 });
+        if(r.exitOk) return { ok: true };
+        return {
+          ok: false,
+          error: (r.stderr || r.stdout || "").trim().slice(0, 200) || `gmgn-cli config --check 離開碼 ${r.exitCode}`,
+          hint: "執行 gmgn-cli config 取得申請方式，拿到後 gmgn-cli config --apply <KEY>"
+        };
       } catch(e){
         return { ok: false, error: e.message, hint: e.hint };
       }

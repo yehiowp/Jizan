@@ -900,6 +900,51 @@ function freshStore(){
   }
 }
 
+/* ═══════════════════════════ 15. 不會卡住、不會謊報成功 ═══════════════════════════ */
+{
+  /* stdin 必須關掉。gmgn-cli 的互動確認會從 tty 讀輸入，
+     繼承 stdin 的話會一路等到逾時，外面看起來就是整支程式死掉。 */
+  {
+    let opts = null;
+    const cli = createCli({ execFileImpl: (bin, argv, o, cb) => {
+      opts = o;
+      cb(null, JSON.stringify({ code: 0, data: {} }), "");
+    }});
+    await cli.gasPrice({ chain: "sol" });
+    assert("子程序的 stdin 被關掉（不會卡在互動提示）",
+      Array.isArray(opts?.stdio) && opts.stdio[0] === "ignore", JSON.stringify(opts?.stdio));
+    assert("每個呼叫都有逾時上限", typeof opts?.timeout === "number" && opts.timeout > 0, String(opts?.timeout));
+  }
+
+  /* config --check 的離開碼就是答案：0 = 已設定，1 = 沒設定。
+     這是實際踩到的 bug —— 舊寫法用 allowNonZero 把非零碼吞掉，
+     結果沒有 API Key 也回報「已設定」，/status 和 selftest 都會騙人。 */
+  {
+    const okCli = createCli({ execFileImpl: (bin, argv, o, cb) => cb(null, "", "") });
+    assert("離開碼 0 → 已設定", (await okCli.configCheck()).ok === true);
+
+    const failCli = createCli({ execFileImpl: (bin, argv, o, cb) => {
+      const err = new Error("Command failed"); err.code = 1;
+      cb(err, "", "API key not configured");
+    }});
+    const r = await failCli.configCheck();
+    assert("離開碼 1 → 回報未設定，不是謊報成功", r.ok === false, JSON.stringify(r));
+    assert("未設定時給得出解法", (r.hint ?? "").includes("config --apply"), r.hint);
+    assert("未設定時帶出 CLI 自己的訊息", (r.error ?? "").includes("API key"), r.error);
+  }
+
+  /* 逾時要回報成逾時，不是無限等待 */
+  {
+    const hang = createCli({ execFileImpl: (bin, argv, o, cb) => {
+      const err = new Error("timeout"); err.killed = true;
+      cb(err, "", "");
+    }});
+    let msg = "";
+    try { await hang.gasPrice({ chain: "sol" }); } catch(e){ msg = e.message; }
+    assert("逾時明確回報而不是卡住", msg.includes("逾時"), msg);
+  }
+}
+
 console.log("");
 if(failures){
   console.log(`${failures} 項測試失敗`);
