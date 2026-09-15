@@ -49,13 +49,19 @@ add("info", "作業系統", `${process.platform} ${os.arch()}`,
 }
 
 /* ── 3. gmgn-cli ── */
+let cliOk = false;
 {
   const r = await runCli(["--version"]);
-  if(r.err && /ENOENT/.test(String(r.err))){
-    add("fail", "gmgn-cli", "找不到這個指令", "npm install -g gmgn-cli");
+  /* resolveCli 找不到套件時才會退回 cmd-shell，所以「退回了而且還失敗」
+     幾乎一定就是根本沒安裝。用這個判斷比去比對錯誤訊息可靠 ——
+     Windows 的中文錯誤訊息是 CP950 編碼，直接印出來是一堆亂碼。 */
+  const notInstalled = (r.err && /ENOENT/.test(String(r.err))) || (r.err && CLI.via === "cmd-shell");
+  if(notInstalled){
+    add("fail", "gmgn-cli", "沒有安裝", "npm install -g gmgn-cli");
   } else if(r.err){
-    add("warn", "gmgn-cli", `執行有問題：${(r.errOut || r.out).trim().slice(0, 80)}`, "試試 npm install -g gmgn-cli 重裝");
+    add("warn", "gmgn-cli", "裝了但執行失敗", "試試 npm install -g gmgn-cli 重裝");
   } else {
+    cliOk = true;
     add("ok", "gmgn-cli", `v${r.out.trim()}${CLI.via === "node-entry" ? "（Windows：用 node 直接跑，繞過 .cmd）" : ""}`);
   }
 }
@@ -81,15 +87,25 @@ add("info", "作業系統", `${process.platform} ${os.arch()}`,
   try {
     const ctrl = new AbortController();
     const timer = setTimeout(() => ctrl.abort(), 12000);
-    const res = await fetch("https://gmgn.ai/", { signal: ctrl.signal }).catch(e => ({ error: e }));
+    /* 帶瀏覽器標頭。沒帶的話 Cloudflare 一律回 403，
+       那是擋機器人，不代表這台機器連不到 GMGN —— 之前這裡會誤報成網路問題，
+       害人去查一個根本不存在的故障。 */
+    const res = await fetch("https://gmgn.ai/", {
+      signal: ctrl.signal,
+      headers: {
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125.0 Safari/537.36",
+        "Accept": "text/html,application/xhtml+xml"
+      }
+    }).catch(e => ({ error: e }));
     clearTimeout(timer);
+
     if(res?.error){
-      add("fail", "連到 GMGN", `連不上：${res.error.message}`,
-        "檢查網路／VPN／防火牆");
+      add("fail", "連到 GMGN", `連不上：${res.error.message}`, "檢查網路／VPN／防火牆");
     } else if(res.status === 403 || res.status === 503){
-      /* 連得上但被擋，跟連不上一樣不能用 —— 這是機房／VPS IP 最常見的死法 */
-      add("fail", "連到 GMGN", `HTTP ${res.status}（被 Cloudflare 擋下）`,
-        "這個 IP 進不去 GMGN。不要用機房／VPS／雲主機的 IP，換家用網路或住宅 IP");
+      /* 真正能判斷「這個 IP 能不能用」的是 gmgn-cli 自己跑得起來，
+         網頁被 Cloudflare 擋只是參考，所以這裡只給提醒不擋路。 */
+      add("warn", "連到 GMGN", `網頁回 HTTP ${res.status}（Cloudflare 機器人防護）`,
+        "這不一定是問題。真正的判準是下面 gmgn-cli 的指令跑不跑得動；如果連 API 都失敗，才考慮換網路（機房／VPS IP 常被擋）");
     } else {
       add("ok", "連到 GMGN", `HTTP ${res.status}`);
     }
@@ -161,6 +177,9 @@ if(env.TELEGRAM_TOKEN){
 
 /* ── 9. 錢包裡有沒有錢 ── */
 {
+  if(!cliOk){
+    add("skip", "錢包餘額", "gmgn-cli 還沒安裝，跳過");
+  } else {
   const r = await runCli(["portfolio", "info", "--raw"], 30000);
   if(r.err){
     const msg = (r.errOut || r.out).trim().slice(0, 120);
@@ -192,6 +211,7 @@ if(env.TELEGRAM_TOKEN){
     } catch {
       add("warn", "錢包餘額", "回傳不是 JSON", "直接跑 gmgn-cli portfolio info 看訊息");
     }
+  }
   }
 }
 
