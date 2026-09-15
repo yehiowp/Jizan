@@ -4,6 +4,7 @@
 import fs from "node:fs";
 import path from "node:path";
 import os from "node:os";
+import { fileURLToPath } from "node:url";
 
 process.env.TELEGRAM_TOKEN = "test:token";
 process.env.OWNER_ID = "123456789";
@@ -1519,6 +1520,24 @@ function freshStore(){
   /* GUID 裡的小寫 ac（94ac6d29）不能被當成 AC 欄位 */
   assert("不會誤中 GUID 裡的小寫 ac",
     readAcSeconds(EN, "94ac6d29-73ce-41a6-809f-6363ba21b47e") === 1, String(readAcSeconds(EN, "94ac6d29-73ce-41a6-809f-6363ba21b47e")));
+}
+
+/* ═══ Windows 守門員腳本的編碼 ═══
+   Windows PowerShell 5.1 沒看到 BOM 就會用系統 ANSI 編碼（繁中 Windows 是 CP950）
+   去讀 .ps1，中文全部變亂碼，而亂碼會吃掉程式碼裡的字元 ——
+   實際踩到時報的是「字串遺漏結尾字元」，跟真正的原因完全對不起來。
+   這條測試就是在守那三個 byte。 */
+{
+  /* 用檔案自己的位置去找，不要靠 cwd —— 從別的資料夾跑測試也要對 */
+  const ps1 = fileURLToPath(new URL("../scripts/run-forever.ps1", import.meta.url));
+  const buf = fs.readFileSync(ps1);
+  assert("PowerShell 腳本帶 UTF-8 BOM",
+    buf[0] === 0xEF && buf[1] === 0xBB && buf[2] === 0xBF,
+    [...buf.subarray(0, 3)].map(b => b.toString(16)).join(" "));
+
+  /* BOM 之後必須還是合法的 UTF-8，而且中文沒有在寫檔時被轉壞 */
+  const text = buf.toString("utf8");
+  assert("腳本內容仍是可讀的 UTF-8", text.includes("守門員") && text.includes("Start-Process"));
 }
 
 console.log("");

@@ -1,3 +1,8 @@
+﻿# 這個檔案必須存成「帶 BOM 的 UTF-8」。
+# Windows PowerShell 5.1（powershell.exe）看不到 BOM 就會用系統 ANSI 編碼
+# （繁中 Windows 是 CP950）去讀，中文全部變亂碼，而亂碼會吃掉程式碼裡的引號，
+# 於是你看到的錯誤是「字串遺漏結尾字元」—— 跟真正的原因完全對不起來。
+# test/run.js 有一條測試在守這件事，別把 BOM 拿掉。
 # 無人看管時的守門員（Windows 版）：程式掛掉就重啟，紀錄檔太大就輪替。
 #
 # 為什麼需要：電腦開著沒人看，程式半夜當掉的話會靜靜停在那裡。
@@ -17,9 +22,11 @@ Set-Location (Split-Path -Parent $PSScriptRoot)
 $Log = Join-Path $HOME "gmgn-bot.log"
 $MaxBytes = 5MB
 
-# 紀錄檔用 UTF-8 寫。Windows PowerShell 預設會寫成 UTF-16，
-# 那份檔案用 tail / type 看會是一堆空格夾雜的亂碼。
-$enc = New-Object System.Text.UTF8Encoding $false
+# 紀錄檔用「帶 BOM 的 UTF-8」寫。兩個理由：
+#   - Windows PowerShell 預設會寫成 UTF-16，那份檔案用 type 看是空格夾雜的亂碼
+#   - 沒有 BOM 的話，PowerShell 5.1 的 Get-Content 會用系統 CP950 去讀，
+#     裡面的中文一樣變亂碼。BOM 是唯一能讓它認出 UTF-8 的東西。
+$enc = New-Object System.Text.UTF8Encoding $true
 
 function Write-Log([string]$msg){
   $line = "{0} {1}`n" -f (Get-Date -Format "yyyy-MM-ddTHH:mm:ssK"), $msg
