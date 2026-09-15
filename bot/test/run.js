@@ -26,7 +26,17 @@ const { config, buildConditionOrders, validateConfig, CURRENCY } = await import(
 const { evaluate, sanitize } = await import("../src/score.js");
 const { evaluateGate, singleSidedDepth, honeypotVerdict } = await import("../src/gate.js");
 const { createStore } = await import("../src/store.js");
-const { createCli, GmgnCliError } = await import("../src/gmgncli.js");
+const { createCli: _createCli, GmgnCliError } = await import("../src/gmgncli.js");
+
+/* 測試一律用固定的 CLI 解析結果。
+
+   為什麼：resolveCli 在 Windows 上會把 gmgn-cli 背後的 JS 進入點塞進參數最前面
+   （那是繞過 .cmd 的 spawn EINVAL 的做法），在 Linux 上則是空的。
+   不固定住的話，假的 execFile 比對子指令會因為多了一段路徑而對不到，
+   測試就變成「這台機器怎麼裝 gmgn-cli」的函數 —— 同一份程式碼在你的機器上綠、
+   在別人的機器上紅，而兩邊的程式其實都沒問題。 */
+const FIXED_CLI = { cmd: "gmgn-cli", prefixArgs: [], via: "direct", needsShell: false };
+const createCli = (opts = {}) => _createCli({ resolved: FIXED_CLI, ...opts });
 const { createTrader } = await import("../src/trader.js");
 const { stats, realMoneyGate } = await import("../src/stats.js");
 const { checkBuy } = await import("../src/risk.js");
@@ -48,7 +58,11 @@ let orderStatuses = [];   // 依序回傳
 function makeExecFile(overrides = {}){
   return function fakeExecFile(bin, argv, opts, cb){
     calls.push({ bin, argv });
-    const join = argv.join(" ");
+    /* 前面可能有 resolveCli 塞進來的進入點路徑（Windows 就是這樣），
+       比對子指令時要先把它跳過，否則比對會因為執行環境不同而失準。 */
+    const args = argv.map(String);
+    while(args.length && /[\\/]/.test(args[0])) args.shift();
+    const join = args.join(" ");
     let payload;
 
     if(overrides.throwFor && join.includes(overrides.throwFor)){
@@ -1699,6 +1713,85 @@ function freshStore(){
   const tenWins = Array.from({ length: 10 }, () => ({ r: 2, outcome: "target", ambiguous: false }));
   const noHalt = summarize(tenWins, { stopPct: 35, bankrollUsd: 100, positionUsd: 20, killSwitchUsd: 60 });
   assert("一路賺不會觸發停機", noHalt.n === 10 && noHalt.halted === null);
+}
+
+/* ═══ Windows 的 CLI 解析方式 ═══
+   Windows 上 gmgn-cli 是 .cmd 包裝，直接 spawn 會拿到 spawn EINVAL，
+   所以 resolveCli 改成用 node 去跑它背後的 JS —— 參數最前面因此多一段路徑。
+   這段在 Linux 上不會發生，所以只跑 Linux 的話這條路徑等於沒被測過。 */
+{
+  const WINDOWS_LIKE = {
+    cmd: "C:\\Program Files\\nodejs\\node.exe",
+    prefixArgs: ["C:\\Users\\u\\AppData\\Roaming\\npm\\node_modules\\gmgn-cli\\dist\\index.js"],
+    via: "node-entry",
+    needsShell: false,
+  };
+
+  const cli = _createCli({ resolved: WINDOWS_LIKE, execFileImpl: makeExecFile() });
+
+  /* 進入點必須排在所有參數前面，而且用的是 node 本身 */
+  const g = await cli.gasPrice({ chain: "sol" });
+  const last = calls[calls.length - 1];
+  assert("Windows 上用 node 執行", last.bin === WINDOWS_LIKE.cmd, last.bin);
+  assert("進入點排在參數最前面", last.argv[0] === WINDOWS_LIKE.prefixArgs[0], last.argv[0]);
+  assert("子指令接在進入點後面", last.argv[1] === "gas-price", last.argv[1]);
+  assert("Windows 解析下 gas-price 照樣拿得到資料",
+    g.native_token_usd_price === "200", JSON.stringify(g));
+
+  /* 真正踩到的那條：訂單輪詢。
+     之前假的 execFile 用 argv.join(" ").startsWith("order get") 比對，
+     前面多一段路徑就永遠對不到，於是輪詢一路空轉到逾時 ——
+     在 Windows 上紅、在 Linux 上綠，而程式本身兩邊都是對的。 */
+  orderStatuses = [{ status: "pending" }, { status: "confirmed", hash: "sig-win" }];
+  const settled = await cli.waitForOrder({
+    chain: "sol", orderId: "ord-win", intervalMs: 1, sleep: () => Promise.resolve(),
+  });
+  assert("Windows 解析下訂單輪詢照樣成功",
+    settled.ok === true && settled.order?.hash === "sig-win", JSON.stringify(settled));
+
+  /* 參數仍然是陣列，沒有被攤平成 shell 字串 —— 這條在 Windows 上特別重要，
+     因為 shell:true 會把 --condition-orders 的 JSON 拆爛，也會開一條注入路徑。 */
+  assert("Windows 解析不需要 shell", WINDOWS_LIKE.needsShell === false);
+  assert("參數是陣列", Array.isArray(last.argv));
+}
+
+/* ═══ 從 Telegram 重啟 ═══
+   /restart 的做法是「結束自己，讓守門員把自己拉回來」。
+   所以唯一真正要守的性質是：沒有守門員的時候絕對不能結束 ——
+   那會讓機器人關掉而且再也起不來，而你人正好不在電腦前。 */
+{
+  const { restartPlan, isSupervised, RESTART_EXIT_CODE, SUPERVISED_ENV } =
+    await import("../src/lifecycle.js");
+
+  assert("沒有守門員就拒絕重啟", restartPlan({}).ok === false);
+  assert("拒絕時要說清楚為什麼", /守門員/.test(restartPlan({}).reason));
+  assert("拒絕時要給出改用守門員的方法", /run-forever/.test(restartPlan({}).detail));
+
+  /* 只有剛好等於 "1" 才算數。空字串、"0"、"false" 都不是 —— 環境變數很容易
+     因為設定檔寫法不同而變成這些值，寬鬆比對會在最不該的時候放行。 */
+  for(const bad of ["", "0", "false", "true", "yes", "2", undefined]){
+    assert(`${JSON.stringify(bad)} 不算有守門員`,
+      isSupervised({ [SUPERVISED_ENV]: bad }) === false);
+  }
+  assert("守門員設 1 才算數", isSupervised({ [SUPERVISED_ENV]: "1" }) === true);
+
+  const ok = restartPlan({ [SUPERVISED_ENV]: "1" });
+  assert("有守門員就允許重啟", ok.ok === true);
+  assert("用的是專屬的離開碼", ok.exitCode === RESTART_EXIT_CODE && RESTART_EXIT_CODE !== 0,
+    String(ok.exitCode));
+
+  /* 離開碼 0 代表「正常關閉，不要重啟」，重啟用 0 的話它就再也起不來了 */
+  assert("重啟的離開碼不能是 0", RESTART_EXIT_CODE !== 0);
+
+  /* 守門員腳本必須真的有設那個環境變數，也必須真的認得那個離開碼 ——
+     不然上面全過，實際跑起來還是叫不動。 */
+  const ps1 = fs.readFileSync(fileURLToPath(new URL("../scripts/run-forever.ps1", import.meta.url)), "utf8");
+  const sh = fs.readFileSync(fileURLToPath(new URL("../scripts/run-forever.sh", import.meta.url)), "utf8");
+  for(const [name, text] of [["ps1", ps1], ["sh", sh]]){
+    assert(`守門員(${name}) 有設 ${SUPERVISED_ENV}`, text.includes(SUPERVISED_ENV), name);
+    assert(`守門員(${name}) 認得離開碼 ${RESTART_EXIT_CODE}`,
+      text.includes(String(RESTART_EXIT_CODE)), name);
+  }
 }
 
 console.log("");

@@ -95,16 +95,22 @@ async function main(){
     "/help 看指令。"
   ].join("\n")).catch(e => log.error("送不出啟動訊息", { error: e.message }));
 
-  const shutdown = signal => {
-    log.info("收到關閉訊號，停止", { signal });
+  /* code 0 = 正常關閉，守門員不會再拉起來。
+     非 0 = 守門員會重啟，這正是 /restart 用的機制。 */
+  const shutdown = (signal, code = 0) => {
+    log.info("收到關閉訊號，停止", { signal, code });
     monitor.stop();
     heartbeat.stop();
     autoTrader.stop();
     /* 持倉的停損停利掛在 GMGN 伺服器端，關掉機器人不影響它們 */
-    process.exit(0);
+    process.exit(code);
   };
   process.on("SIGINT", () => shutdown("SIGINT"));
   process.on("SIGTERM", () => shutdown("SIGTERM"));
+
+  /* Telegram 的 /restart：結束自己，讓守門員把自己拉回來。
+     bot.js 那邊已經確認過「真的有守門員在看」才會走到這裡。 */
+  botApi.attachRestart((reason, code) => shutdown(reason, code));
   process.on("unhandledRejection", e => log.error("未處理的 rejection", { error: e?.message ?? String(e) }));
 }
 

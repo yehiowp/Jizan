@@ -154,6 +154,7 @@ npm start
 | `/mode live` | 切到真錢（要按確認鍵；啟動時沒開 `GMGN_ALLOW_AUTOMATED_TRADES` 就切不了） |
 | `/panic` | 全部賣光並停止交易 |
 | `/resume` | 恢復交易 |
+| `/restart` | 重啟機器人（重讀 `.env`）—— 只有在守門員底下跑時才會答應 |
 
 ## 風控（寫死在程式裡，不是建議值）
 
@@ -358,6 +359,39 @@ powershell -ExecutionPolicy Bypass -File scripts\run-forever.ps1
 紀錄檔在 `%USERPROFILE%\gmgn-bot.log`。要停就在那個視窗按 Ctrl+C。
 
 ⚠️ **同一個錢包同時只能有一個機器人在跑。** 帳本存在各自的 `data/state.json`，兩個行程互相看不見 —— 部位數上限、在場資金上限、單日虧損上限、停機線會各算各的，實際風險變成兩倍。而且 GMGN 的流量額度是綁 API Key 的，兩邊共用一把 Key 會一起被 429 封。
+
+### 關掉視窗也要跑（Windows 排程工作）
+
+```powershell
+cd $HOME\Jizan\bot
+powershell -ExecutionPolicy Bypass -File scripts\install-task.ps1
+Start-ScheduledTask -TaskName GMGN-Meme-Bot
+```
+
+登入時自動啟動，沒有視窗。常用指令：
+
+| 做什麼 | 指令 |
+|---|---|
+| 看狀態 | `Get-ScheduledTask -TaskName GMGN-Meme-Bot \| Get-ScheduledTaskInfo` |
+| 停掉 | `Stop-ScheduledTask -TaskName GMGN-Meme-Bot` |
+| 移除 | `powershell -ExecutionPolicy Bypass -File scripts\install-task.ps1 -Remove` |
+| 看紀錄 | `Get-Content $HOME\gmgn-bot.log -Tail 40 -Wait` |
+
+兩個刻意的限制：
+
+**只在你登入時啟動，不是系統開機就跑。** 你沒登入的時候它不該在交易。
+
+**排程工作跑起來一定是模擬模式。** 真錢需要 `GMGN_ALLOW_AUTOMATED_TRADES=1`，而排程工作拿不到你 shell 裡的環境變數——那道防線本來就該由你本人每次手動開。要跑真錢就用終端機啟動，視窗留著最小化。
+
+⚠️ 看不見的程式在花你的錢。`HEARTBEAT_HOURS` 一定要開著，心跳沒來是你唯一會察覺它停掉的訊號。
+
+### 從 Telegram 重啟
+
+`/restart` 會重讀 `.env` 並重新載入程式碼，不用碰電腦。
+
+做法是「結束自己，讓守門員把自己拉回來」（離開碼 42，守門員看到會立刻重啟）。所以**沒有守門員在看的時候它會拒絕**——直接 `npm start` 跑的話，結束就等於再也起不來，而你人正好不在電腦前。那時候它會告訴你改用哪個指令啟動。
+
+持倉不受影響（停損停利在 GMGN 伺服器端），但自動交易的武裝會解除，起來之後要重新 `/auto on`。
 
 ### 無人看管的三道保險
 

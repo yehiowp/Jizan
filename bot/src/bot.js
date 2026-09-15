@@ -3,6 +3,7 @@ import { config } from "./config.js";
 import { log } from "./log.js";
 import { sanitize } from "./score.js";
 import { stats, realMoneyGate } from "./stats.js";
+import { restartPlan } from "./lifecycle.js";
 
 const PLAN_TTL_MS = 120000;   // 報價會過期，確認鈕不能無限期有效
 
@@ -15,6 +16,7 @@ export function createBot({ cli, store, trader, cfg = config }){
   const pendingPlans = new Map();
   let autoTrader = null;   // 由 index.js 在建立後掛上來（它需要 say，而 say 來自這裡）
   let narrative = null;
+  let onRestart = null;   // 由 index.js 掛上來：停掉所有迴圈然後結束行程
   let pendingArmHours = null;   // /auto on <小時> 指定的時數，等按下確認才生效
 
   /* 最後一次成功跟 Telegram 往來的時間。自動交易會拿這個當「你還連得上我嗎」的判準 ——
@@ -118,6 +120,7 @@ export function createBot({ cli, store, trader, cfg = config }){
         "/status 系統狀態",
         "/mode paper|live 切換模擬／真錢",
         "/config 目前參數",
+        "/restart 重啟機器人（重讀 .env）",
         "/panic 全部賣光並停止交易",
         "/resume 恢復交易",
         "",
@@ -361,6 +364,33 @@ export function createBot({ cli, store, trader, cfg = config }){
         "",
         "參數改 .env 之後重啟機器人。模擬／真錢可以直接 /mode 切。"
       ].join("\n"));
+    },
+
+    /* 從 Telegram 重啟。實際做法是結束自己，讓守門員把自己拉回來 ——
+       所以沒有守門員的時候一定要拒絕，否則它會關掉而且再也起不來。 */
+    async restart(){
+      const plan = restartPlan();
+      if(!plan.ok){
+        return say([`🚫 現在不能重啟：${plan.reason}`, "", plan.detail].join("\n"));
+      }
+      if(!onRestart){
+        return say("🚫 重啟的掛鉤沒有接上（這是程式的問題，不是你的操作）。");
+      }
+
+      const open = store.openPositions().length;
+      await say([
+        "♻️ 正在重啟…",
+        "",
+        `持倉 ${open} 個不受影響 —— 停損停利掛在 GMGN 伺服器端，機器人關著它們照樣執行。`,
+        "重啟會重新讀取 .env，所以你在電腦上改過的設定會生效。",
+        "自動交易的武裝會解除，起來之後要重新 /auto on。",
+        "",
+        "大約 10 秒後它會自己跟你說「機器人已啟動」。沒有的話就是守門員沒把它拉回來。"
+      ].join("\n"));
+
+      /* 給 Telegram 一點時間把上面那則訊息送出去。
+         直接 exit 的話訊息會卡在送出佇列裡，你只會看到機器人無聲無息地消失。 */
+      setTimeout(() => onRestart("Telegram /restart", plan.exitCode), 1500).unref?.();
     },
 
     async panic(){
@@ -662,6 +692,7 @@ export function createBot({ cli, store, trader, cfg = config }){
     bot, say, commands, doSell, pendingPlans,
     attachAutoTrader(at){ autoTrader = at; },
     telegramSilentMs(){ return Date.now() - lastTelegramOk; },
-    attachNarrative(n){ narrative = n; }
+    attachNarrative(n){ narrative = n; },
+    attachRestart(fn){ onRestart = fn; }
   };
 }

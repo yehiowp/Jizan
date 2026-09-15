@@ -35,6 +35,9 @@ while true; do
     fi
   fi
 
+  # 告訴機器人「有人在看著你」。Telegram 的 /restart 只有看到這個才敢結束自己。
+  export GMGN_SUPERVISED=1
+
   echo "$(date -Iseconds) 啟動機器人" >> "$LOG"
   node src/index.js >> "$LOG" 2>&1
   code=$?
@@ -43,6 +46,12 @@ while true; do
   if [ "$code" -eq 0 ]; then
     echo "$(date -Iseconds) 正常結束，不重啟" >> "$LOG"
     exit 0
+  fi
+
+  # 42 = 從 Telegram 要求重啟，不是當掉。立刻拉回來。
+  if [ "$code" -eq 42 ]; then
+    echo "$(date -Iseconds) 收到重啟要求，立刻重啟" >> "$LOG"
+    continue
   fi
 
   echo "$(date -Iseconds) 異常結束（code=$code），10 秒後重啟" >> "$LOG"

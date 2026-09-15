@@ -34,6 +34,10 @@ function Write-Log([string]$msg){
   Write-Host $line.TrimEnd()
 }
 
+# 告訴機器人「有人在看著你」。Telegram 的 /restart 只有看到這個才敢結束自己 ——
+# 沒有守門員的話，結束就等於再也起不來，而你人可能不在電腦前。
+$env:GMGN_SUPERVISED = "1"
+
 Write-Log "守門員啟動，紀錄檔：$Log"
 
 while ($true) {
@@ -65,6 +69,12 @@ while ($true) {
   if ($p.ExitCode -eq 0) {
     Write-Log "正常結束，不重啟"
     exit 0
+  }
+
+  # 42 = 從 Telegram 要求重啟，不是當掉。立刻拉回來，不用等那 10 秒。
+  if ($p.ExitCode -eq 42) {
+    Write-Log "收到重啟要求，立刻重啟"
+    continue
   }
 
   Write-Log ("異常結束（code={0}），10 秒後重啟" -f $p.ExitCode)
