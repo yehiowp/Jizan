@@ -9,7 +9,8 @@
     "start": "node src/index.js",
     "selftest": "node src/selftest.js",
     "test": "node test/run.js",
-    "verify": "node src/verify-fields.js all"
+    "verify": "node src/verify-fields.js all",
+    "doctor": "node doctor.mjs"
   },
   "engines": {
     "node": ">=20"

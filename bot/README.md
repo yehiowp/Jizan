@@ -40,6 +40,14 @@ cp .env.example .env
 # 編輯 .env：填 TELEGRAM_TOKEN、OWNER_ID、GMGN_WALLET_ADDRESS
 ```
 
+## 卡住了就先跑這個
+
+```bash
+node doctor.mjs
+```
+
+零依賴，**不用先 `npm install` 就能跑**。它會逐項檢查 Node 版本、相依套件、`gmgn-cli`、API Key、網路、IPv6、`.env` 每一欄、Telegram token 是否有效、錢包地址與餘額，每個問題都直接給你要打的指令。Windows 會給 PowerShell 的寫法。
+
 ## 上線順序（不要跳步）
 
 ### 第一步：自檢（不花錢）
