@@ -1125,6 +1125,55 @@ function freshStore(){
   assert("清理後新的那筆還在", s.wasSeen("trigger") === true);
 }
 
+/* ═══════════════════════════ 19. 欄位驗證工具 ═══════════════════════════ */
+{
+  const { verify } = await import("../src/verify-fields.js");
+
+  const fullGas = { code: 0, data: { native_token_usd_price: "212.4",
+    average_prio_fee: 1, average_prio_fee_mixed: 0.005,
+    low_prio_fee_mixed: 0.001, high_prio_fee_mixed: 0.01, average_estimate_time: 3 } };
+  const g = verify("gas", fullGas);
+  assert("欄位齊全時沒有缺失", g.missing === 0 && g.criticalMissing === 0, JSON.stringify([g.missing, g.criticalMissing]));
+  assert("認得出佔位值陷阱", g.report.some(r => r[1] === "佔位值陷阱" && r[2].includes("正確")),
+    JSON.stringify(g.report.at(-1)));
+
+  const renamed = verify("gas", { code: 0, data: { sol_usd_price: "212.4" } });
+  assert("關鍵欄位改名會被抓到", renamed.criticalMissing >= 2, String(renamed.criticalMissing));
+  assert("缺失說明講得出後果", renamed.report.some(r => r[2].includes("下單數量直接錯")));
+
+  /* trending 是陣列，要能從各種包裝裡找出第一筆 */
+  const row = { address: "A", symbol: "S", liquidity: 1, volume: 1, price: 1, swaps: 1,
+    buys: 1, sells: 1, holder_count: 1, price_change_percent1h: 1, price_change_percent5m: 1,
+    rug_ratio: 0.1, top_10_holder_rate: 0.1, is_wash_trading: false, is_honeypot: 0,
+    renounced_mint: 1, renounced_freeze_account: 1, dev_team_hold_rate: 0, bundler_rate: 0,
+    rat_trader_amount_rate: 0, smart_degen_count: 1, renowned_count: 1, burn_status: "burn",
+    lock_percent: 0, open_timestamp: 1, sell_tax: "", buy_tax: "" };
+  for(const wrap of [[row], { rank: [row] }, { list: [row] }, { data: [row] }]){
+    const r = verify("trending", wrap.code !== undefined ? wrap : { code: 0, data: wrap });
+    assert(`trending 從 ${Array.isArray(wrap) ? "陣列" : Object.keys(wrap)[0]} 取得資料`,
+      r.criticalMissing === 0, JSON.stringify(r.report.filter(x => x[0] === "critical")));
+  }
+  const empty = verify("trending", { code: 0, data: [] });
+  assert("空清單被當成問題回報", empty.missing === 1 && empty.report[0][0] === "critical");
+
+  /* 巢狀路徑 */
+  const info = verify("info", { code: 0, data: { price: { price: 1 }, pool: {}, stat: {} } });
+  assert("巢狀欄位找得到", info.report.some(r => r[1] === "price.price" && r[0] === "ok"));
+  assert("巢狀欄位缺失也抓得到",
+    info.report.some(r => r[1] === "stat.creator_hold_rate" && r[0] === "critical"));
+
+  /* null 不等於缺失 —— Solana 上很多欄位本來就是 null */
+  const nulls = verify("security", { code: 0, data: { is_honeypot: null, rug_ratio: 0.1,
+    top_10_holder_rate: 0.1, sell_tax: "", renounced_mint: 1 } });
+  assert("null 值不算缺失", nulls.report.some(r => r[1] === "is_honeypot" && r[0] === "info"),
+    JSON.stringify(nulls.report[0]));
+  assert("空字串稅率標示為未測", nulls.report.some(r => r[1] === "sell_tax" && r[2].includes("未測")));
+
+  let threw = false;
+  try { verify("不存在的種類", {}); } catch { threw = true; }
+  assert("不認得的種類會報錯", threw);
+}
+
 console.log("");
 if(failures){
   console.log(`${failures} 項測試失敗`);

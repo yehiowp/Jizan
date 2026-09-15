@@ -8,9 +8,12 @@
   "scripts": {
     "start": "node src/index.js",
     "selftest": "node src/selftest.js",
-    "test": "node test/run.js"
+    "test": "node test/run.js",
+    "verify": "node src/verify-fields.js all"
   },
-  "engines": { "node": ">=20" },
+  "engines": {
+    "node": ">=20"
+  },
   "dependencies": {
     "@solana/web3.js": "^1.95.3",
     "bs58": "^6.0.0",
