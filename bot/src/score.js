@@ -69,23 +69,32 @@ export function evaluate(row, { minDepthUsd = 30000, chain = "sol" } = {}){
   /* 安全結構分：Solana 看 mint/freeze 是否放棄，EVM 看 is_renounced（三態，未知不扣分） */
   let safety = 0;
   if(chain === "sol"){
-    if(renouncedMint === true) safety += 5;
-    if(renouncedFreeze === true) safety += 4;
+    if(renouncedMint === true) safety += 4;
+    if(renouncedFreeze === true) safety += 3;
   } else {
-    if(tri(row.is_renounced) === true) safety += 5;
-    if(tri(row.is_open_source) === true) safety += 4;
+    if(tri(row.is_renounced) === true) safety += 4;
+    if(tri(row.is_open_source) === true) safety += 3;
   }
   if(burned || lockPct >= 50) safety += 3;
 
+  /* 聰明錢與 KOL 的實際持倉。
+     這是整張表裡唯一「有紀錄的人拿真錢投票」的訊號，比名字熱度或動能可靠，
+     所以給的權重不低。但它也最容易被反向利用（KOL 出貨給你），
+     因此只加分、不當作放行條件 —— 紅旗照樣一票否決。 */
+  const smartCount = num(row.smart_degen_count);
+  const kolCount = num(row.renowned_count ?? row.kol_count);
+  const smartScore = clamp(logScore(smartCount, 1, 25, 8) + logScore(kolCount, 1, 12, 6), 0, 12);
+
   const factors = [
-    { k: "單邊深度",   v: `$${Math.round(depth)}`,            s: logScore(depth, 15000, 500000, 16), max: 16 },
-    { k: "量/池比",    v: `${vpr.toFixed(2)}x`,               s: bandScore(vpr, vprLo * 0.5, vprLo, vprHi, vprHi * 1.6, 14), max: 14 },
-    { k: "買賣壓",     v: `${(buyRatio * 100).toFixed(0)}%`,  s: bandScore(buyRatio, 0.40, 0.55, 0.78, 0.94, 12), max: 12 },
+    { k: "單邊深度",   v: `$${Math.round(depth)}`,            s: logScore(depth, 15000, 500000, 15), max: 15 },
+    { k: "量/池比",    v: `${vpr.toFixed(2)}x`,               s: bandScore(vpr, vprLo * 0.5, vprLo, vprHi, vprHi * 1.6, 13), max: 13 },
+    { k: "買賣壓",     v: `${(buyRatio * 100).toFixed(0)}%`,  s: bandScore(buyRatio, 0.40, 0.55, 0.78, 0.94, 11), max: 11 },
     { k: "動能",       v: `1h ${ch1h.toFixed(1)}% / 5m ${ch5m.toFixed(1)}%`, s: momentum(ch1h, ch5m, chInterval), max: 14 },
-    { k: "持有人數",   v: String(holders),                    s: logScore(holders, 80, 4000, 12), max: 12 },
-    { k: "成交筆數",   v: String(swaps),                      s: logScore(swaps, 20, 2000, 10), max: 10 },
-    { k: "籌碼分散",   v: `前十 ${(top10 * 100).toFixed(0)}%`, s: top10 > 0 ? clamp((0.5 - top10) / 0.35, 0, 1) * 10 : 5, max: 10 },
-    { k: "安全結構",   v: safetyLabel({ chain, renouncedMint, renouncedFreeze, burned, lockPct }), s: safety, max: 12 }
+    { k: "聰明錢/KOL", v: `${smartCount} / ${kolCount} 人`,   s: smartScore, max: 12 },
+    { k: "持有人數",   v: String(holders),                    s: logScore(holders, 80, 4000, 10), max: 10 },
+    { k: "成交筆數",   v: String(swaps),                      s: logScore(swaps, 20, 2000, 7), max: 7 },
+    { k: "籌碼分散",   v: `前十 ${(top10 * 100).toFixed(0)}%`, s: top10 > 0 ? clamp((0.5 - top10) / 0.35, 0, 1) * 8 : 4, max: 8 },
+    { k: "安全結構",   v: safetyLabel({ chain, renouncedMint, renouncedFreeze, burned, lockPct }), s: safety, max: 10 }
   ];
 
   const metrics = { depth, liquidity, volume, vpr, vprLo, vprHi, holders, swaps, buys, sells,
@@ -102,7 +111,7 @@ export function evaluate(row, { minDepthUsd = 30000, chain = "sol" } = {}){
     symbol: sanitize(row.symbol) || "?",
     name: sanitize(row.name) || "",
     price, liquidity, depth, volume, holders, swaps, ageMin,
-    ch1h, ch5m, rugRatio, top10,
+    ch1h, ch5m, rugRatio, top10, smartCount, kolCount,
     score: Math.round(score),
     factors,
     flags,

@@ -92,6 +92,7 @@ function healthyRow(over = {}){
     bundler_rate: 0.05, rat_trader_amount_rate: 0.04, lock_percent: 0,
     burn_status: "burn", sell_tax: "", buy_tax: "",
     is_wash_trading: false, is_honeypot: 0,
+    smart_degen_count: 6, renowned_count: 3,
     renounced_mint: 1, renounced_freeze_account: 1,
     open_timestamp: Math.floor(Date.now() / 1000) - 6 * 3600,
     ...over
@@ -716,6 +717,86 @@ function freshStore(){
     badHours.auto = { ...autoCfg.auto, armHours: 999 };
     assert("武裝時效超過 72 小時會被擋", !validateConfig(badHours).ok);
   }
+}
+
+/* ═══════════════════════════ 12. 熱門題材（IP）聚類 ═══════════════════════════ */
+{
+  const { keywords, clusterIps, createNarrative } = await import("../src/narrative.js");
+
+  assert("關鍵字濾掉結構字保留主題字",
+    keywords("PENGU", "Pudgy Penguin Coin").includes("penguin") &&
+    !keywords("PENGU", "Pudgy Penguin Coin").includes("coin"),
+    JSON.stringify(keywords("PENGU", "Pudgy Penguin Coin")));
+  assert("抓得到中日韓詞", keywords("企鵝幣").includes("企鵝"), JSON.stringify(keywords("企鵝幣")));
+  assert("純數字與過短的字不算關鍵字",
+    !keywords("42 AB").length, JSON.stringify(keywords("42 AB")));
+
+  const ipTokens = [
+    { address: "A", symbol: "PENGU", name: "Pudgy Penguin", liquidity: 900000, volume: 2000000,
+      holder_count: 5000, smart_degen_count: 9, renowned_count: 4, rug_ratio: 0.03,
+      open_timestamp: Math.floor(Date.now() / 1000) - 7200 },
+    { address: "B", symbol: "PENGUIN2", name: "Penguin Two", liquidity: 90000, volume: 200000,
+      holder_count: 400, rug_ratio: 0.1, open_timestamp: Math.floor(Date.now() / 1000) - 600 },
+    { address: "C", symbol: "BABYPENGUIN", name: "Baby Penguin", liquidity: 40000, volume: 80000,
+      holder_count: 200, rug_ratio: 0.2, open_timestamp: Math.floor(Date.now() / 1000) - 300 },
+    { address: "D", symbol: "LONER", name: "Solo Coin", liquidity: 500000, volume: 900000, holder_count: 900 }
+  ];
+
+  const ips = clusterIps(ipTokens, { minTokens: 2 });
+  const penguin = ips.find(i => i.keyword === "penguin");
+  assert("同題材多顆幣被聚成一個 IP", penguin?.tokenCount === 3, JSON.stringify(ips.map(i => [i.keyword, i.tokenCount])));
+  assert("領頭取流動性最深的那顆", penguin?.leader.address === "A", penguin?.leader.address);
+  assert("其餘的被標成仿盤", penguin?.copycats.length === 2);
+  assert("只出現一次的幣不算 IP", !ips.some(i => i.keyword === "loner"), JSON.stringify(ips.map(i => i.keyword)));
+  assert("熱度把幣的顆數與成交量都算進去", penguin.heat > 0 && penguin.totalVolume === 2280000, String(penguin.totalVolume));
+
+  /* 同一顆幣同時出現在熱搜和成交榜不能重複計算 */
+  const dupes = clusterIps([...ipTokens, { ...ipTokens[0] }, { ...ipTokens[1] }], { minTokens: 2 });
+  assert("重複來源的同一顆幣只算一次",
+    dupes.find(i => i.keyword === "penguin")?.tokenCount === 3,
+    String(dupes.find(i => i.keyword === "penguin")?.tokenCount));
+
+  /* 仿盤風險判讀 */
+  const narrative = createNarrative({ cli: createCli({ execFileImpl: makeExecFile() }) });
+  const risks = narrative.copycatRisk(penguin);
+  assert("剛開的仿盤會被點出來", risks.some(r => r.includes("仿盤還在增加")), JSON.stringify(risks));
+
+  const contested = narrative.copycatRisk({
+    tokenCount: 2, leader: { liquidity: 100000 }, copycats: [{ liquidity: 80000 }], newestAgeMin: 5000
+  });
+  assert("正主未定會被點出來", contested.some(r => r.includes("誰是正主")), JSON.stringify(contested));
+
+  /* 沒設定付費社群 API 時要老實說，不能假裝知道推特在紅什麼 */
+  delete process.env.SOCIAL_SEARCH_PROVIDER;
+  delete process.env.SOCIAL_SEARCH_API_KEY;
+  const note = narrative.socialNote();
+  assert("沒有社群 API 時明講沒抓推特",
+    note.configured === false && note.note.includes("沒有設定"), JSON.stringify(note));
+
+  process.env.SOCIAL_SEARCH_PROVIDER = "x_api";
+  process.env.SOCIAL_SEARCH_API_KEY = "k";
+  assert("有設定就回報供應商", narrative.socialNote().configured === true);
+  delete process.env.SOCIAL_SEARCH_PROVIDER;
+  delete process.env.SOCIAL_SEARCH_API_KEY;
+}
+
+/* ═══════════════════════════ 13. 聰明錢加權 ═══════════════════════════ */
+{
+  const withSmart = evaluate(healthyRow({ smart_degen_count: 20, renowned_count: 10 }), { chain: "sol" });
+  const without = evaluate(healthyRow({ smart_degen_count: 0, renowned_count: 0 }), { chain: "sol" });
+  assert("聰明錢多的加分比較高", withSmart.score > without.score, `${withSmart.score} vs ${without.score}`);
+
+  const smartFactor = withSmart.factors.find(f => f.k === "聰明錢/KOL");
+  assert("聰明錢因子存在且有上限", smartFactor && smartFactor.s <= smartFactor.max, JSON.stringify(smartFactor));
+
+  /* 但聰明錢救不了紅旗幣 —— 加分不能變成放行 */
+  const smartHoneypot = evaluate(healthyRow({ smart_degen_count: 50, renowned_count: 30, is_honeypot: 1 }), { chain: "sol" });
+  assert("聰明錢再多也救不了蜜罐", smartHoneypot.grade === "D" && smartHoneypot.flags.length > 0,
+    `${smartHoneypot.grade} ${smartHoneypot.score}`);
+
+  assert("因子上限總和是 100",
+    withSmart.factors.reduce((s, f) => s + f.max, 0) === 100,
+    String(withSmart.factors.reduce((s, f) => s + f.max, 0)));
 }
 
 console.log("");

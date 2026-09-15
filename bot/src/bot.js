@@ -14,6 +14,7 @@ export function createBot({ cli, store, trader, cfg = config }){
   const owner = String(cfg.telegram.ownerId);
   const pendingPlans = new Map();
   let autoTrader = null;   // 由 index.js 在建立後掛上來（它需要 say，而 say 來自這裡）
+  let narrative = null;
 
   const say = (text, extra = {}) =>
     bot.sendMessage(owner, text, { disable_web_page_preview: true, ...extra });
@@ -96,6 +97,7 @@ export function createBot({ cli, store, trader, cfg = config }){
         modeLine(),
         autoLine(),
         "",
+        "/hot [1h] 現在最熱的題材（IP）",
         "/auto on 武裝自動交易　/auto off 解除",
         "/why 它現在會買什麼、為什麼不買",
         "/scan 掃描候選",
@@ -313,6 +315,60 @@ export function createBot({ cli, store, trader, cfg = config }){
       ].filter(Boolean).join("\n"));
     },
 
+    /* 熱門 IP（題材）：從熱搜 + 成交榜的代幣名稱裡把重複的關鍵字聚類出來。
+       一個 IP 熱起來的特徵是「同題材一次冒出一堆幣」，不是單一顆幣在漲。 */
+    async hot(intervalArg){
+      if(!narrative) return say("題材模組沒載入。");
+      const interval = ["1m", "5m", "1h", "6h", "24h"].includes(intervalArg) ? intervalArg : "1h";
+      await say(`找 ${interval} 內的熱門題材…`);
+
+      try {
+        const { ips, scanned, hotSearchCount, trendingCount } = await narrative.hotIps({ interval });
+        const social = narrative.socialNote();
+
+        if(!ips.length){
+          return say([
+            `掃了 ${scanned} 顆（熱搜 ${hotSearchCount} + 成交 ${trendingCount}），沒有出現重複題材。`,
+            "這通常代表現在沒有明顯的 IP 浪潮，各紅各的。",
+            social.configured ? "" : social.note
+          ].filter(Boolean).join("\n"));
+        }
+
+        await say([
+          `${interval} 熱門題材（掃了 ${scanned} 顆，找到 ${ips.length} 個重複題材）`,
+          social.configured ? `社群資料來源：${social.provider}` : social.note
+        ].join("\n\n"));
+
+        for(const ip of ips.slice(0, 5)){
+          const risks = narrative.copycatRisk(ip);
+          const leader = ip.leader;
+          await say([
+            `🔥 ${ip.keyword.toUpperCase()}　熱度 ${ip.heat}`,
+            `同題材 ${ip.tokenCount} 顆　合計成交 ${usd(ip.totalVolume)}　持有人 ${ip.holders}`,
+            ip.kolCount ? `KOL 持有 ${ip.kolCount} 人次　聰明錢 ${ip.smartCount} 人次` : "",
+            "",
+            `領頭：${sanitize(leader.symbol)}　流動性 ${usd(leader.liquidity)}`,
+            `${leader.address}`,
+            ip.copycats.length
+              ? `其餘 ${ip.copycats.length} 顆：${ip.copycats.slice(0, 4).map(c => sanitize(c.symbol)).join(" / ")}`
+              : "",
+            risks.length ? "\n⚠️ " + risks.join("\n⚠️ ") : "",
+            "",
+            "熱度高只代表「現在很多人在搶這個題材」，不代表領頭那顆會漲。"
+          ].filter(Boolean).join("\n"), {
+            reply_markup: { inline_keyboard: [[
+              { text: `檢查領頭的 ${sanitize(leader.symbol).slice(0, 10)}`, callback_data: `prep:${leader.address.slice(0, 50)}` }
+            ]] }
+          });
+        }
+
+        await say("⚠️ 熱門題材最大的坑是買錯合約。上面的「領頭」只是流動性最深的那顆，"
+                + "不等於官方正主。按檢查鍵會跑完整的量／深度／安全三道閘門，別跳過。");
+      } catch(e){
+        await say(`找題材失敗：${e.message}${e.hint ? `\n${e.hint}` : ""}`);
+      }
+    },
+
     /* 讓你隨時能看它「現在會不會買、為什麼不買」 */
     async why(){
       if(!autoTrader) return say("自動交易模組沒載入。");
@@ -447,6 +503,7 @@ export function createBot({ cli, store, trader, cfg = config }){
 
   return {
     bot, say, commands, doSell, pendingPlans,
-    attachAutoTrader(at){ autoTrader = at; }
+    attachAutoTrader(at){ autoTrader = at; },
+    attachNarrative(n){ narrative = n; }
   };
 }

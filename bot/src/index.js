@@ -8,6 +8,7 @@ import { createTrader } from "./trader.js";
 import { createBot } from "./bot.js";
 import { createMonitor } from "./monitor.js";
 import { createAutoTrader } from "./autotrader.js";
+import { createNarrative } from "./narrative.js";
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 const STATE_FILE = path.join(here, "..", "data", "state.json");
@@ -47,6 +48,7 @@ async function main(){
   const monitor = createMonitor({ store, trader, say });
   const autoTrader = createAutoTrader({ store, trader, say });
   botApi.attachAutoTrader(autoTrader);
+  botApi.attachNarrative(createNarrative({ cli }));
 
   /* 重開機不會自動接續武裝：上次的武裝時效若還沒過，也要你重新確認。
      機器人在你不知情的情況下重啟並繼續花錢，是不能接受的。 */
