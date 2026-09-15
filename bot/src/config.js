@@ -36,7 +36,19 @@ export const config = {
     chain: str("CHAIN", "sol")
   },
   mode: {
-    dryRun: bool("DRY_RUN", true)
+    dryRun: bool("DRY_RUN", true),
+    /* 自動交易：預設關閉。開啟後還要在 Telegram 用 /auto on 武裝，
+       而且武裝會自己到期 —— 沒有「設定完就放著跑一個月」這種模式。 */
+    autoBuy: bool("AUTO_BUY", false)
+  },
+  auto: {
+    /* 自動模式的門檻一律比手動嚴：它沒有你的判斷力，只能靠更高的標準補 */
+    minScore: numEnv("AUTO_MIN_SCORE", 72),
+    maxWarnings: Math.round(numEnv("AUTO_MAX_WARNINGS", 2)),
+    allowDowngrade: bool("AUTO_ALLOW_DOWNGRADE", false),
+    maxTradesPerDay: Math.round(numEnv("AUTO_MAX_TRADES_PER_DAY", 4)),
+    maxSpendPerDayUsd: numEnv("AUTO_MAX_SPEND_PER_DAY_USD", 60),
+    armHours: numEnv("AUTO_ARM_HOURS", 12)
   },
   risk: {
     bankrollUsd: numEnv("BANKROLL_USD", 100),
@@ -94,6 +106,21 @@ export function validateConfig(cfg = config){
   if(cfg.exec.slippagePct > 30) warnings.push("SLIPPAGE_PCT 超過 30%，等於告訴機器人「隨便夾我」");
   if(r.positionUsd < 10) warnings.push(`部位只有 $${r.positionUsd}，扣掉手續費與滑價後幾乎不可能賺錢`);
   if(!["low", "average", "high"].includes(cfg.exec.gasTier)) errors.push("GAS_TIER 只能是 low / average / high");
+
+  const a = cfg.auto;
+  if(cfg.mode.autoBuy){
+    if(a.minScore < cfg.filter.minScore){
+      errors.push(`AUTO_MIN_SCORE (${a.minScore}) 不能低於 MIN_SCORE (${cfg.filter.minScore})：自動模式只能比手動嚴`);
+    }
+    if(a.maxTradesPerDay < 1) errors.push("AUTO_MAX_TRADES_PER_DAY 至少要 1");
+    if(a.armHours <= 0 || a.armHours > 72) errors.push("AUTO_ARM_HOURS 必須介於 0 到 72 小時之間");
+    if(a.maxSpendPerDayUsd > cfg.risk.maxDeployedUsd){
+      warnings.push(`AUTO_MAX_SPEND_PER_DAY_USD ($${a.maxSpendPerDayUsd}) 超過在場資金上限 ($${cfg.risk.maxDeployedUsd})，實際會被後者卡住`);
+    }
+    if(!cfg.mode.dryRun){
+      warnings.push("自動交易 + 真錢模式：機器人會在你沒看螢幕的時候用自己的判斷花錢");
+    }
+  }
 
   return { ok: errors.length === 0, errors, warnings };
 }

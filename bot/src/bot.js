@@ -13,6 +13,7 @@ export function createBot({ cli, store, trader, cfg = config }){
   const bot = new TelegramBot(cfg.telegram.token, { polling: true });
   const owner = String(cfg.telegram.ownerId);
   const pendingPlans = new Map();
+  let autoTrader = null;   // 由 index.js 在建立後掛上來（它需要 say，而 say 來自這裡）
 
   const say = (text, extra = {}) =>
     bot.sendMessage(owner, text, { disable_web_page_preview: true, ...extra });
@@ -35,6 +36,18 @@ export function createBot({ cli, store, trader, cfg = config }){
 
   function modeLine(){
     return cfg.mode.dryRun ? "🧪 模擬模式（不會動到真錢）" : "💸 真錢模式";
+  }
+
+  function autoLine(){
+    if(!cfg.mode.autoBuy) return "🤖 自動交易：未啟用（.env 的 AUTO_BUY=false）";
+    if(!store.isAutoArmed()){
+      const why = store.autoDisarmReason();
+      return `🤖 自動交易：待命中${why ? `（上次解除：${why}）` : ""}　用 /auto on 武裝`;
+    }
+    const hoursLeft = (store.autoArmedUntil() - Date.now()) / 3600000;
+    const t = store.autoToday();
+    return `🤖 自動交易：武裝中，剩 ${hoursLeft.toFixed(1)} 小時`
+      + `　今日 ${t.count}/${cfg.auto.maxTradesPerDay} 筆　$${t.spentUsd.toFixed(0)}/$${cfg.auto.maxSpendPerDayUsd}`;
   }
 
   /* ── 訊息組裝 ── */
@@ -81,10 +94,13 @@ export function createBot({ cli, store, trader, cfg = config }){
       await say([
         "🐸 GMGN 迷因機器人已上線",
         modeLine(),
+        autoLine(),
         "",
+        "/auto on 武裝自動交易　/auto off 解除",
+        "/why 它現在會買什麼、為什麼不買",
         "/scan 掃描候選",
         "/check <地址> 只做檢查不下單",
-        "/buy <地址> [金額] 準備買單（要按確認）",
+        "/buy <地址> [金額] 手動買單（要按確認）",
         "/positions 持倉",
         "/sell <id> [百分比] 賣出",
         "/stats 績效",
@@ -93,7 +109,7 @@ export function createBot({ cli, store, trader, cfg = config }){
         "/panic 全部賣光並停止交易",
         "/resume 恢復交易",
         "",
-        "所有買入都要你親自按確認鍵，機器人不會自己買。"
+        "武裝後它會自己買；沒武裝時所有買入都要你按確認鍵。"
       ].join("\n"));
     },
 
@@ -105,6 +121,7 @@ export function createBot({ cli, store, trader, cfg = config }){
       const cfgCheck = await cli.configCheck();
       await say([
         `${modeLine()}`,
+        autoLine(),
         `交易開關：${store.state.tradingEnabled ? "開啟" : `停用（${store.state.disabledReason}）`}`,
         `GMGN CLI：${cfgCheck.ok ? "已設定" : `未通過（${cfgCheck.error ?? ""}）`}`,
         "",
@@ -240,6 +257,86 @@ export function createBot({ cli, store, trader, cfg = config }){
     async resume(){
       store.setTrading(true, "");
       await say("交易已恢復。");
+    },
+
+    /* /auto            看狀態
+       /auto on         武裝（要再按一次確認鍵）
+       /auto off        解除 */
+    async auto(sub){
+      if(!cfg.mode.autoBuy && sub === "on"){
+        return say("自動交易在 .env 裡是關的。要開的話設定 AUTO_BUY=true 再重啟機器人。");
+      }
+
+      if(sub === "off"){
+        store.disarmAuto("手動解除");
+        return say("🤖 自動交易已解除武裝。持倉的停損停利不受影響，照樣掛在 GMGN 那邊。");
+      }
+
+      if(sub === "on"){
+        const a = cfg.auto;
+        return say([
+          "⚠️ 武裝自動交易",
+          "",
+          `武裝後 ${a.armHours} 小時內，機器人會自己掃描、自己選幣、自己下單，不再問你。`,
+          "",
+          "它會受到的限制：",
+          `· 分數要 ≥ ${a.minScore}（手動模式只要 ${cfg.filter.minScore}）`,
+          `· 量／深度／安全三道閘門全過，且注意事項不超過 ${a.maxWarnings} 條`,
+          `· ${a.allowDowngrade ? "接受" : "不接受"}執行降級訊號`,
+          "· 蜜罐檢測必須明確安全，「未測」一律不買",
+          `· 每天最多 ${a.maxTradesPerDay} 筆、最多花 $${a.maxSpendPerDayUsd}`,
+          `· 每筆 $${cfg.risk.positionUsd}，停損 -${cfg.risk.stopPct}%（掛在 GMGN 伺服器端）`,
+          `· 單日虧損到 $${cfg.risk.maxDailyLossUsd} 或淨值跌破 $${cfg.risk.killSwitchUsd} 就全部停掉`,
+          "",
+          cfg.mode.dryRun
+            ? "🧪 目前是模擬模式，它只會記帳不會花錢。"
+            : "💸 目前是真錢模式。按下去之後它會在你沒看螢幕的時候花你的錢。",
+          "",
+          `${a.armHours} 小時後武裝自動失效，要繼續得再按一次。`
+        ].join("\n"), {
+          reply_markup: { inline_keyboard: [[
+            { text: `✅ 武裝 ${a.armHours} 小時`, callback_data: "arm:confirm" },
+            { text: "取消", callback_data: "arm:cancel" }
+          ]] }
+        });
+      }
+
+      /* 沒帶參數：顯示狀態 */
+      const budget = autoTrader?.dailyBudget?.();
+      return say([
+        autoLine(),
+        modeLine(),
+        `交易開關：${store.state.tradingEnabled ? "開啟" : `停用（${store.state.disabledReason}）`}`,
+        budget && !budget.ok ? `今日額度：${budget.reasons[0]}` : "",
+        "",
+        "/auto on 武裝　/auto off 解除"
+      ].filter(Boolean).join("\n"));
+    },
+
+    /* 讓你隨時能看它「現在會不會買、為什麼不買」 */
+    async why(){
+      if(!autoTrader) return say("自動交易模組沒載入。");
+      await say("跑一輪自動判斷（不下單）…");
+      const budget = autoTrader.dailyBudget();
+      const lines = [
+        autoLine(),
+        `今日額度：${budget.ok ? "還有" : budget.reasons[0]}`
+      ];
+      try {
+        const { all, candidates } = await trader.scan();
+        const pool = candidates.filter(c => c.score >= cfg.auto.minScore);
+        lines.push(`掃到 ${all.length} 顆，通過手動門檻 ${candidates.length} 顆，通過自動門檻 ${pool.length} 顆`);
+        for(const coin of pool.slice(0, 3)){
+          const plan = await trader.prepareBuy({ address: coin.address, coin, usdAmount: cfg.risk.positionUsd });
+          plan.coinScore = coin.score;
+          const extra = autoTrader.autoGate(plan);
+          const reasons = [...plan.gate.blocks, ...plan.riskCheck.reasons, ...extra];
+          lines.push("", `${coin.symbol}（${coin.score}）：${reasons.length ? reasons[0] : "全部條件通過，武裝時會買這顆"}`);
+        }
+      } catch(e){
+        lines.push(`掃描失敗：${e.message}`);
+      }
+      await say(lines.join("\n"));
     }
   };
 
@@ -287,6 +384,24 @@ export function createBot({ cli, store, trader, cfg = config }){
         return say("已取消。");
       }
 
+      if(action === "arm"){
+        if(a === "cancel") return say("已取消，維持待命。");
+        if(a === "confirm"){
+          if(!cfg.mode.autoBuy) return say("自動交易在 .env 裡是關的。");
+          if(!store.state.tradingEnabled){
+            return say(`交易目前是停用狀態（${store.state.disabledReason}），先 /resume 再武裝。`);
+          }
+          const armed = store.armAuto(cfg.auto.armHours);
+          return say([
+            `🤖 自動交易已武裝${cfg.mode.dryRun ? "（模擬模式）" : ""}`,
+            `到期時間：${new Date(armed.armedUntil).toLocaleString("zh-TW")}`,
+            `每 ${Math.round(cfg.timing.scanIntervalSec / 60)} 分鐘掃一次，一輪最多買一筆。`,
+            "",
+            "隨時可以 /auto off 停掉，/why 看它現在為什麼買或不買。"
+          ].join("\n"));
+        }
+      }
+
       if(action === "prep"){
         return commands.buy(a);
       }
@@ -330,5 +445,8 @@ export function createBot({ cli, store, trader, cfg = config }){
 
   bot.on("polling_error", e => log.warn("Telegram polling 錯誤", { error: e.message }));
 
-  return { bot, say, commands, doSell, pendingPlans };
+  return {
+    bot, say, commands, doSell, pendingPlans,
+    attachAutoTrader(at){ autoTrader = at; }
+  };
 }

@@ -8,7 +8,11 @@ const DEFAULT_STATE = {
   positions: [],   // 持倉中
   trades: [],      // 已平倉
   seen: {},        // tokenAddress -> 上次通知時間，避免洗版
-  daily: {}        // "YYYY-MM-DD" -> 當日已實現損益
+  daily: {},       // "YYYY-MM-DD" -> 當日已實現損益
+  /* 自動交易的武裝狀態。armedUntil 是時間戳，過期自動解除 ——
+     不讓「設定完放著跑一個月」這種狀態存在。 */
+  auto: { armedUntil: 0, armedAt: 0, disarmReason: "" },
+  autoBuys: {}     // "YYYY-MM-DD" -> { count, spentUsd }
 };
 
 export function createStore(filePath){
@@ -86,6 +90,32 @@ export function createStore(filePath){
       state.tradingEnabled = enabled;
       state.disabledReason = reason;
       save();
+    },
+
+    /* ── 自動交易武裝狀態 ── */
+    armAuto(hours, now = Date.now()){
+      state.auto = { armedUntil: now + hours * 3600 * 1000, armedAt: now, disarmReason: "" };
+      save();
+      return state.auto;
+    },
+    disarmAuto(reason = "手動解除"){
+      state.auto = { armedUntil: 0, armedAt: state.auto?.armedAt ?? 0, disarmReason: reason };
+      save();
+    },
+    isAutoArmed(now = Date.now()){
+      return (state.auto?.armedUntil ?? 0) > now;
+    },
+    autoArmedUntil(){ return state.auto?.armedUntil ?? 0; },
+    autoDisarmReason(){ return state.auto?.disarmReason ?? ""; },
+
+    autoToday(today = new Date().toISOString().slice(0, 10)){
+      return state.autoBuys[today] ?? { count: 0, spentUsd: 0 };
+    },
+    recordAutoBuy(usdAmount, today = new Date().toISOString().slice(0, 10)){
+      const cur = state.autoBuys[today] ?? { count: 0, spentUsd: 0 };
+      state.autoBuys[today] = { count: cur.count + 1, spentUsd: cur.spentUsd + usdAmount };
+      save();
+      return state.autoBuys[today];
     }
   };
 }

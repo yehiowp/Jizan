@@ -7,6 +7,7 @@ import { createCli } from "./gmgncli.js";
 import { createTrader } from "./trader.js";
 import { createBot } from "./bot.js";
 import { createMonitor } from "./monitor.js";
+import { createAutoTrader } from "./autotrader.js";
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 const STATE_FILE = path.join(here, "..", "data", "state.json");
@@ -29,16 +30,37 @@ async function main(){
     process.exit(1);
   }
 
+  /* 自動交易 + 真錢：再講一次它實際的意思，然後照你的決定跑 */
+  if(config.mode.autoBuy && !config.mode.dryRun){
+    log.warn("自動交易 + 真錢模式", {
+      meaning: "武裝後機器人會自己選幣、自己下單，不再徵詢你",
+      bounded_by: `每筆 $${config.risk.positionUsd}、每日最多 ${config.auto.maxTradesPerDay} 筆 / $${config.auto.maxSpendPerDayUsd}、單日虧損上限 $${config.risk.maxDailyLossUsd}、淨值停機線 $${config.risk.killSwitchUsd}`,
+      arming: `武裝 ${config.auto.armHours} 小時後自動失效，重啟也會解除`
+    });
+  }
+
   const store = createStore(STATE_FILE);
   const cli = createCli();
   const trader = createTrader({ cli, store });
-  const { say } = createBot({ cli, store, trader });
+  const botApi = createBot({ cli, store, trader });
+  const { say } = botApi;
   const monitor = createMonitor({ store, trader, say });
+  const autoTrader = createAutoTrader({ store, trader, say });
+  botApi.attachAutoTrader(autoTrader);
+
+  /* 重開機不會自動接續武裝：上次的武裝時效若還沒過，也要你重新確認。
+     機器人在你不知情的情況下重啟並繼續花錢，是不能接受的。 */
+  if(store.isAutoArmed()){
+    store.disarmAuto("機器人重新啟動");
+    log.info("啟動時解除舊的自動武裝", {});
+  }
 
   monitor.start();
+  if(config.mode.autoBuy) autoTrader.start();
 
   log.info("機器人啟動", {
     mode: config.mode.dryRun ? "DRY_RUN" : "LIVE",
+    autoBuy: config.mode.autoBuy,
     chain: config.gmgn.chain,
     positionUsd: config.risk.positionUsd,
     openPositions: store.openPositions().length
@@ -47,14 +69,18 @@ async function main(){
   await say([
     "🐸 機器人已啟動",
     config.mode.dryRun ? "🧪 模擬模式（不會動到真錢）" : "💸 真錢模式",
+    config.mode.autoBuy
+      ? "🤖 自動交易：已啟用但待命中（重啟會解除武裝）。用 /auto on 武裝。"
+      : "🤖 自動交易：未啟用",
     `持倉 ${store.openPositions().length} 個　今日已實現 $${store.realizedToday().toFixed(2)}`,
     "",
-    "/help 看指令。買入一律要你按確認鍵。"
+    "/help 看指令。"
   ].join("\n")).catch(e => log.error("送不出啟動訊息", { error: e.message }));
 
   const shutdown = signal => {
-    log.info("收到關閉訊號，停止監控", { signal });
+    log.info("收到關閉訊號，停止", { signal });
     monitor.stop();
+    autoTrader.stop();
     /* 持倉的停損停利掛在 GMGN 伺服器端，關掉機器人不影響它們 */
     process.exit(0);
   };

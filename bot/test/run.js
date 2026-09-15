@@ -543,6 +543,181 @@ function freshStore(){
     fs.readdirSync(dir).some(f => f.includes("corrupt")), fs.readdirSync(dir).join(","));
 }
 
+/* ═══════════════════════════ 11. 自動交易 ═══════════════════════════ */
+{
+  const { createAutoTrader } = await import("../src/autotrader.js");
+
+  /* 自動模式用的設定：門檻比手動嚴 */
+  const autoCfg = JSON.parse(JSON.stringify(config));
+  autoCfg.mode.autoBuy = true;
+  autoCfg.auto = { minScore: 72, maxWarnings: 2, allowDowngrade: false,
+                   maxTradesPerDay: 2, maxSpendPerDayUsd: 40, armHours: 12 };
+
+  function autoSetup(overrides = {}){
+    const store = freshStore();
+    const cli = createCli({ execFileImpl: makeExecFile(overrides) });
+    const trader = createTrader({ cli, store, cfg: autoCfg });
+    const said = [];
+    const auto = createAutoTrader({ store, trader, say: m => { said.push(m); return Promise.resolve(); }, cfg: autoCfg });
+    return { store, trader, auto, said };
+  }
+
+  /* 未武裝就什麼都不做 */
+  {
+    const { auto, store, said } = autoSetup();
+    const r = await auto.cycle();
+    assert("未武裝時不下單", r.skipped === "未武裝" && store.openPositions().length === 0, JSON.stringify(r));
+    assert("未武裝時不吵人", said.length === 0);
+  }
+
+  /* 武裝後會自己買 */
+  {
+    const { auto, store, said } = autoSetup();
+    store.armAuto(12);
+    const r = await auto.cycle();
+    assert("武裝後自動買入", r.ok === true && store.openPositions().length === 1, JSON.stringify(r));
+    assert("買完會回報原因", said.some(m => m.includes("為什麼買") && m.includes("自動買入")), said[0]?.slice(0, 60));
+    assert("計入當日自動額度", store.autoToday().count === 1 && store.autoToday().spentUsd === 20,
+      JSON.stringify(store.autoToday()));
+  }
+
+  /* 武裝會過期 */
+  {
+    const { auto, store, said } = autoSetup();
+    store.armAuto(12);
+    assert("武裝中", store.isAutoArmed() === true);
+    store.armAuto(-1);                       // 讓它變成已過期
+    assert("過期後視為未武裝", store.isAutoArmed() === false);
+    const r = await auto.cycle();
+    assert("過期後不下單", store.openPositions().length === 0, JSON.stringify(r));
+    assert("過期會通知一次", said.some(m => m.includes("時效到期")), JSON.stringify(said));
+  }
+
+  /* 當日筆數上限 */
+  {
+    const { auto, store } = autoSetup();
+    store.armAuto(12);
+    store.recordAutoBuy(20);
+    store.recordAutoBuy(20);
+    const r = await auto.cycle();
+    assert("達當日筆數上限就停手", /上限/.test(r.skipped ?? ""), JSON.stringify(r));
+  }
+
+  /* 當日金額上限 */
+  {
+    const { auto, store } = autoSetup();
+    store.armAuto(12);
+    store.recordAutoBuy(30);                  // 再買 20 會到 50 > 40
+    const r = await auto.cycle();
+    assert("超過當日支出上限就停手", /支出/.test(r.skipped ?? ""), JSON.stringify(r));
+  }
+
+  /* 分數沒到自動門檻就不買（手動門檻 62，自動 72） */
+  {
+    const lowScore = healthyRow({ holder_count: 120, swaps: 40, volume: 120000,
+                                  price_change_percent1h: 1, price_change_percent5m: 0 });
+    const { auto, store } = autoSetup({ trending: [lowScore] });
+    store.armAuto(12);
+    const r = await auto.cycle();
+    assert("分數未達自動門檻不買", store.openPositions().length === 0 && /門檻/.test(r.skipped ?? ""), JSON.stringify(r));
+  }
+
+  /* 蜜罐「未測」在自動模式一律不買 —— 人可以自己判斷，機器人不行 */
+  {
+    const { auto, store } = autoSetup({
+      security: { rug_ratio: 0.04, top_10_holder_rate: 0.18, renounced_mint: 1, renounced_freeze_account: 1,
+                  buy_tax: "", sell_tax: "" },                        // 四層蜜罐判據全缺
+      info: healthyInfo({ price: { ...healthyInfo().price, sells_24h: 0 } })
+    });
+    store.armAuto(12);
+    const r = await auto.cycle();
+    assert("蜜罐未測時自動模式不買", store.openPositions().length === 0, JSON.stringify(r));
+  }
+
+  /* 執行降級訊號：手動可以買，自動不吃 */
+  {
+    const downgradeInfo = healthyInfo({
+      price: { ...healthyInfo().price, price: 0.00113, price_5m: 0.0012 }   // 5m 回撤 -5.8%
+    });
+    const { auto, store, trader } = autoSetup({ info: downgradeInfo });
+    store.armAuto(12);
+
+    const plan = await trader.prepareBuy({ address: "Tok1111111111111111111111111111111111111111" });
+    assert("降級單在手動模式仍可執行", plan.canExecute, JSON.stringify(plan.gate.blocks));
+
+    plan.coinScore = 99;
+    assert("降級單被自動模式擋下",
+      auto.autoGate(plan).some(b => b.includes("降級")), JSON.stringify(auto.autoGate(plan)));
+  }
+
+  /* 報價失敗 → 自動模式不買 */
+  {
+    const { auto } = autoSetup();
+    assert("報價失敗時自動模式不買",
+      auto.autoGate({ coinScore: 99, quoteError: "timeout",
+        gate: { warnings: [], downgrade: [], blocks: [], metrics: { honeypot: false, rugRatio: 0.04 } } })
+        .some(b => b.includes("報價失敗")));
+  }
+
+  /* 注意事項太多 → 不買 */
+  {
+    const { auto } = autoSetup();
+    const many = auto.autoGate({ coinScore: 99,
+      gate: { warnings: ["a", "b", "c"], downgrade: [], blocks: [], metrics: { honeypot: false, rugRatio: 0.04 } } });
+    assert("注意事項超過上限就不買", many.some(b => b.includes("注意事項")), JSON.stringify(many));
+  }
+
+  /* 交易被停用時，自動武裝要一併解除 */
+  {
+    const { auto, store, said } = autoSetup();
+    store.armAuto(12);
+    store.setTrading(false, "單日虧損達 $20");
+    const r = await auto.cycle();
+    assert("交易停用時自動解除武裝", store.isAutoArmed() === false, JSON.stringify(r));
+    assert("解除有通知", said.some(m => m.includes("武裝一併解除")), JSON.stringify(said));
+    assert("解除原因寫清楚", /停用/.test(store.autoDisarmReason()), store.autoDisarmReason());
+  }
+
+  /* 風控上限對自動模式一樣有效：持倉滿了就不買 */
+  {
+    const { auto, store } = autoSetup();
+    store.armAuto(12);
+    for(let i = 0; i < 3; i++){
+      store.addPosition({ id: `f${i}`, tokenAddress: `X${i}`, symbol: `F${i}`, costUsd: 20,
+                          entryPrice: 1, lastPrice: 1, stopPrice: 0.65, targetPrice: 1.7, riskUsd: 7 });
+    }
+    const before = store.openPositions().length;
+    await auto.cycle();
+    assert("持倉滿時自動模式不加倉", store.openPositions().length === before, String(store.openPositions().length));
+  }
+
+  /* 一輪最多買一筆 */
+  {
+    const { auto, store } = autoSetup({
+      trending: [healthyRow({ address: "T1" }), healthyRow({ address: "T2" }), healthyRow({ address: "T3" })]
+    });
+    store.armAuto(12);
+    await auto.cycle();
+    assert("一輪最多買一筆", store.openPositions().length === 1, String(store.openPositions().length));
+  }
+
+  /* 設定驗證：自動門檻不得低於手動門檻 */
+  {
+    const bad = JSON.parse(JSON.stringify(config));
+    bad.mode.autoBuy = true;
+    bad.auto = { ...autoCfg.auto, minScore: 50 };
+    bad.filter.minScore = 62;
+    const v = validateConfig(bad);
+    assert("自動門檻低於手動門檻會被擋",
+      !v.ok && v.errors.some(e => e.includes("AUTO_MIN_SCORE")), JSON.stringify(v.errors));
+
+    const badHours = JSON.parse(JSON.stringify(config));
+    badHours.mode.autoBuy = true;
+    badHours.auto = { ...autoCfg.auto, armHours: 999 };
+    assert("武裝時效超過 72 小時會被擋", !validateConfig(badHours).ok);
+  }
+}
+
 console.log("");
 if(failures){
   console.log(`${failures} 項測試失敗`);
