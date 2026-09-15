@@ -13,10 +13,70 @@ export class GmgnCliError extends Error {
   }
 }
 
+/* GMGN 的限流是漏桶：rate=20、capacity=20，每個指令有各自的權重。
+   權重表照 gmgn-swap/SKILL.md 的 Rate Limit Handling 抄。
+   表上沒列的讀取指令一律當 1。 */
+const WEIGHTS = {
+  "swap": 5,
+  "multi-swap": 5,
+  "order quote": 2,
+  "order get": 1,
+  "order strategy create": 5,
+  "order strategy cancel": 2,
+  "order strategy list": 1,
+  "gas-price": 1
+};
+
+function weightOf(args){
+  const three = args.slice(0, 3).join(" ");
+  const two = args.slice(0, 2).join(" ");
+  const one = args[0];
+  return WEIGHTS[three] ?? WEIGHTS[two] ?? WEIGHTS[one] ?? 1;
+}
+
+/* 客戶端漏桶。目的不是加速，是不要自己去撞 GMGN 的限流 ——
+   一旦撞上就是整個 IP 被封，而且文件寫明冷卻期內每重試一次就延長 5 秒。
+   與其被封之後再處理，不如一開始就不要送超過它願意收的量。 */
+export function createBucket({ capacity = 20, refillPerSec = 20, now = () => Date.now() } = {}){
+  let tokens = capacity;
+  let last = now();
+  let bannedUntil = 0;
+
+  function refill(){
+    const t = now();
+    tokens = Math.min(capacity, tokens + (t - last) / 1000 * refillPerSec);
+    last = t;
+  }
+
+  return {
+    /* 還要等多久才能送出這個權重的請求（毫秒）。0 代表現在就可以。 */
+    waitMs(weight){
+      const t = now();
+      if(bannedUntil > t) return bannedUntil - t;
+      refill();
+      if(tokens >= weight) return 0;
+      return Math.ceil((weight - tokens) / refillPerSec * 1000);
+    },
+    take(weight){
+      refill();
+      tokens -= weight;
+    },
+    /* 被 GMGN 封了就記下解封時間，期間一律不送 —— 重送只會延長封禁 */
+    ban(untilMs){
+      bannedUntil = Math.max(bannedUntil, untilMs);
+      tokens = 0;
+    },
+    bannedForMs(){ return Math.max(0, bannedUntil - now()); },
+    get level(){ refill(); return tokens; }
+  };
+}
+
 /* gmgn-cli 封裝。
    全部用 execFile + 參數陣列，絕不拼 shell 字串 ——
    代幣名稱/符號來自鏈上，是攻擊者可以任意填的欄位，拼進 shell 就等於把主機送人。 */
-export function createCli({ bin = "gmgn-cli", execFileImpl = execFile, defaultTimeoutMs = 45000, resolved = null } = {}){
+export function createCli({ bin = "gmgn-cli", execFileImpl = execFile, defaultTimeoutMs = 45000,
+                            resolved = null, bucket = createBucket(),
+                            sleep = ms => new Promise(r => setTimeout(r, ms)) } = {}){
   /* Windows 上 gmgn-cli 是 .cmd 包裝，直接 spawn 會拿到 spawn EINVAL。
      resolveCli 會找出它背後的 JS 進入點，改用 node 去跑，參數仍然保持陣列。 */
   const target = resolved ?? resolveCli(bin);
@@ -28,7 +88,23 @@ export function createCli({ bin = "gmgn-cli", execFileImpl = execFile, defaultTi
 
   /* withStatus: true 時一律回 { exitOk, stdout, stderr, json }，把離開碼原封不動交出去。
      這是給「離開碼本身就是答案」的指令用的（例如 config --check：0 = 已設定，1 = 沒設定）。 */
-  function run(args, { timeoutMs = defaultTimeoutMs, allowNonZero = false, withStatus = false } = {}){
+  async function run(args, opts = {}){
+    /* 送出前先過漏桶。被封鎖期間直接拒絕，不排隊、不重試。 */
+    const weight = weightOf(args.map(String));
+    const banned = bucket.bannedForMs();
+    if(banned > 0){
+      throw new GmgnCliError("GMGN 限流冷卻中", {
+        code: "RATE_LIMIT",
+        hint: `還要等 ${Math.ceil(banned / 1000)} 秒。期間送出任何請求都會延長封禁。`
+      });
+    }
+    const wait = bucket.waitMs(weight);
+    if(wait > 0) await sleep(wait);
+    bucket.take(weight);
+    return execOnce(args, opts);
+  }
+
+  function execOnce(args, { timeoutMs = defaultTimeoutMs, allowNonZero = false, withStatus = false } = {}){
     const argv = [...target.prefixArgs, ...args.map(String)];
     return new Promise((resolve, reject) => {
       execFileImpl(target.cmd, argv, {
@@ -60,6 +136,9 @@ export function createCli({ bin = "gmgn-cli", execFileImpl = execFile, defaultTi
           let resetAt = null;
           const m = blob.match(/"reset_at"\s*:\s*(\d+)/);
           if(m) resetAt = parseInt(m[1], 10);
+          /* 記下封禁，之後所有請求在解封前直接被擋在本地 ——
+             真正讓封禁一直延長的，是冷卻期間還在敲門。 */
+          bucket.ban(resetAt ? resetAt * 1000 : Date.now() + 5 * 60000);
           return reject(new GmgnCliError("GMGN 限流", {
             code: "RATE_LIMIT",
             resetAt,
@@ -111,6 +190,7 @@ export function createCli({ bin = "gmgn-cli", execFileImpl = execFile, defaultTi
 
   return {
     run,
+    bucket,
 
     /* 官方文件：exit 0 = 已設定可以往下走，exit 1 = 要先設 API Key。
        離開碼就是答案，所以一定要用 withStatus 把它取出來 ——

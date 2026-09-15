@@ -1321,6 +1321,73 @@ function freshStore(){
   }
 }
 
+/* ═══════════════════════════ 22. 限流：不要自己去撞 ═══════════════════════════ */
+{
+  const { createBucket } = await import("../src/gmgncli.js");
+
+  let clock = 0;
+  const b = createBucket({ capacity: 20, refillPerSec: 20, now: () => clock });
+
+  assert("一開始是滿的", b.level === 20, String(b.level));
+  assert("有額度時不用等", b.waitMs(5) === 0);
+
+  b.take(20);
+  assert("用完之後要等", b.waitMs(1) > 0, String(b.waitMs(1)));
+  clock += 1000;                       // 過一秒補滿
+  assert("時間過了就補回來", b.waitMs(20) === 0, String(b.waitMs(20)));
+
+  /* 權重：swap 是 5，讀取類是 1 */
+  const heavy = createBucket({ capacity: 6, refillPerSec: 1, now: () => clock });
+  heavy.take(5);
+  assert("重指令吃掉大部分額度", heavy.level <= 1.01, String(heavy.level));
+
+  /* 被封鎖期間一律不送 */
+  const banned = createBucket({ now: () => clock });
+  banned.ban(clock + 300000);
+  assert("封鎖期間要等", banned.waitMs(1) === 300000, String(banned.waitMs(1)));
+  assert("回報剩餘封鎖時間", banned.bannedForMs() === 300000);
+  clock += 300000;
+  assert("封鎖過期後恢復", banned.bannedForMs() === 0);
+
+  /* CLI 層：限流回應要讓後續請求在本地就被擋下，不再送出去 */
+  {
+    let calls = 0;
+    const cli = createCli({
+      sleep: () => Promise.resolve(),
+      execFileImpl: (cmd, argv, o, cb) => {
+        calls++;
+        cb(new Error("x"), "", '{"code":429,"error":"RATE_LIMIT_BANNED","reset_at":' +
+          Math.floor((Date.now() + 120000) / 1000) + '}');
+      }
+    });
+
+    let first = null;
+    try { await cli.gasPrice({ chain: "sol" }); } catch(e){ first = e; }
+    assert("第一次撞到限流會回報", first?.code === "RATE_LIMIT", first?.message);
+    assert("第一次有真的送出去", calls === 1, String(calls));
+
+    let second = null;
+    try { await cli.trending({ chain: "sol" }); } catch(e){ second = e; }
+    assert("第二次直接在本地擋下，不再送出", calls === 1, String(calls));
+    assert("擋下時說明還要等多久", second?.code === "RATE_LIMIT" && /秒/.test(second.hint), second?.hint);
+  }
+
+  /* 額度不足時會等待而不是失敗 */
+  {
+    let slept = 0;
+    const tiny = createBucket({ capacity: 2, refillPerSec: 2 });
+    const cli = createCli({
+      bucket: tiny,
+      sleep: ms => { slept += ms; return Promise.resolve(); },
+      execFileImpl: (cmd, argv, o, cb) => cb(null, JSON.stringify({ code: 0, data: {} }), "")
+    });
+    await cli.gasPrice({ chain: "sol" });   // 權重 1
+    await cli.gasPrice({ chain: "sol" });   // 權重 1，剛好用完
+    await cli.gasPrice({ chain: "sol" });   // 要等補充
+    assert("額度不足時是等待而不是報錯", slept > 0, String(slept));
+  }
+}
+
 console.log("");
 if(failures){
   console.log(`${failures} 項測試失敗`);
