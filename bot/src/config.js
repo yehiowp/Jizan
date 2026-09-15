@@ -131,7 +131,10 @@ export const config = {
   },
   timing: {
     scanIntervalSec: Math.max(30, numEnv("SCAN_INTERVAL_SEC", 90)),
-    monitorIntervalSec: Math.max(20, numEnv("MONITOR_INTERVAL_SEC", 60))
+    monitorIntervalSec: Math.max(20, numEnv("MONITOR_INTERVAL_SEC", 60)),
+    /* 心跳：無人看管時，「沒收到訊息」不該等於「沒事發生」，
+       也可能是它早就掛了而你不知道。0 = 關閉。 */
+    heartbeatHours: numEnv("HEARTBEAT_HOURS", 12)
   }
 };
 

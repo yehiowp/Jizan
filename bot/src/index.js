@@ -10,6 +10,7 @@ import { createMonitor } from "./monitor.js";
 import { createAutoTrader } from "./autotrader.js";
 import { createNarrative } from "./narrative.js";
 import { createReconciler } from "./reconcile.js";
+import { createHeartbeat } from "./heartbeat.js";
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 const STATE_FILE = path.join(here, "..", "data", "state.json");
@@ -70,7 +71,9 @@ async function main(){
     log.warn("啟動對帳失敗，交給監控迴圈重試", { error: e.message });
   }
 
+  const heartbeat = createHeartbeat({ store, say });
   monitor.start();
+  heartbeat.start();
   if(config.mode.autoBuy) autoTrader.start();
 
   log.info("機器人啟動", {
@@ -95,6 +98,7 @@ async function main(){
   const shutdown = signal => {
     log.info("收到關閉訊號，停止", { signal });
     monitor.stop();
+    heartbeat.stop();
     autoTrader.stop();
     /* 持倉的停損停利掛在 GMGN 伺服器端，關掉機器人不影響它們 */
     process.exit(0);

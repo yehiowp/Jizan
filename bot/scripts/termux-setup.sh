@@ -63,7 +63,7 @@ cat > ~/.termux/boot/gmgn-bot.sh <<EOF
 #!/data/data/com.termux/files/usr/bin/sh
 termux-wake-lock
 cd $(pwd)
-exec node src/index.js >> ~/gmgn-bot.log 2>&1
+exec sh scripts/run-forever.sh
 EOF
 chmod +x ~/.termux/boot/gmgn-bot.sh
 echo "   已寫入 ~/.termux/boot/gmgn-bot.sh"

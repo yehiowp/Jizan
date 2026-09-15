@@ -1388,6 +1388,33 @@ function freshStore(){
   }
 }
 
+/* ═══════════════════════════ 23. 心跳 ═══════════════════════════ */
+{
+  const { createHeartbeat } = await import("../src/heartbeat.js");
+
+  const store = freshStore();
+  const said = [];
+  const hb = createHeartbeat({ store, say: m => { said.push(m); return Promise.resolve(); }, cfg: config });
+
+  await hb.beat();
+  assert("心跳說得出自己還在跑", said[0]?.includes("還在跑"), said[0]?.slice(0, 30));
+  assert("心跳帶上持倉與損益", /持倉 0/.test(said[0]) && /今日已實現/.test(said[0]), said[0]);
+
+  /* 交易被停用時，心跳一定要講出來 —— 這是最需要你知道的狀態 */
+  store.setTrading(false, "單日虧損達 $20");
+  await hb.beat();
+  assert("停用狀態會出現在心跳裡", said[1]?.includes("交易已停用"), said[1]);
+
+  /* 關閉時不排程 */
+  const offCfg = JSON.parse(JSON.stringify(config));
+  offCfg.timing.heartbeatHours = 0;
+  const off = createHeartbeat({ store, say: () => Promise.resolve(), cfg: offCfg });
+  off.start();
+  let ok = true;
+  try { off.stop(); } catch { ok = false; }
+  assert("設 0 就不啟動也不報錯", ok);
+}
+
 console.log("");
 if(failures){
   console.log(`${failures} 項測試失敗`);
