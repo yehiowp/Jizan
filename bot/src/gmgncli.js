@@ -37,10 +37,13 @@ function weightOf(args){
 /* 客戶端漏桶。目的不是加速，是不要自己去撞 GMGN 的限流 ——
    一旦撞上就是整個 IP 被封，而且文件寫明冷卻期內每重試一次就延長 5 秒。
    與其被封之後再處理，不如一開始就不要送超過它願意收的量。 */
-export function createBucket({ capacity = 20, refillPerSec = 20, now = () => Date.now() } = {}){
+export function createBucket({ capacity = 20, refillPerSec = 20, now = () => Date.now(),
+                               initialBanUntil = 0, onBan = null } = {}){
   let tokens = capacity;
   let last = now();
-  let bannedUntil = 0;
+  /* 啟動時就把上一輪還沒過的封禁帶進來，不然重啟等於重新開始撞牆 */
+  let bannedUntil = Number(initialBanUntil) || 0;
+  if(bannedUntil > now()) tokens = 0;
 
   function refill(){
     const t = now();
@@ -65,6 +68,9 @@ export function createBucket({ capacity = 20, refillPerSec = 20, now = () => Dat
     ban(untilMs){
       bannedUntil = Math.max(bannedUntil, untilMs);
       tokens = 0;
+      /* 寫到磁碟，這樣重啟之後還記得。寫失敗不能讓交易流程掛掉 ——
+         記不住比當掉好，而且下一次 429 還會再寫一次。 */
+      if(onBan){ try { onBan(bannedUntil); } catch { /* 記不住就算了 */ } }
     },
     bannedForMs(){ return Math.max(0, bannedUntil - now()); },
     get level(){ refill(); return tokens; }

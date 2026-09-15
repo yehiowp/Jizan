@@ -147,6 +147,21 @@ export function createStore(filePath){
       state.autoBuys[today] = { count: cur.count + 1, spentUsd: cur.spentUsd + usdAmount };
       save();
       return state.autoBuys[today];
+    },
+
+    /* GMGN 的限流封禁要跨行程記住。
+
+       封禁是綁 API Key 的，不是綁行程的 —— 重啟之後它還在。
+       但漏桶只活在記憶體裡，重啟等於忘記自己被封了，第一個請求就打出去，
+       而文件寫明冷卻期內每送一次請求封禁就延長 5 秒。
+       「卡住了就重啟」是人最直覺的反應，也正好是把封禁越拖越長的那個動作。 */
+    rateLimitBanUntil(){ return state.rateLimitBanUntil ?? 0; },
+    setRateLimitBan(untilMs){
+      const cur = state.rateLimitBanUntil ?? 0;
+      if(untilMs <= cur) return cur;          // 只往後延，不會被較早的時間洗掉
+      state.rateLimitBanUntil = untilMs;
+      save();
+      return untilMs;
     }
   };
 }

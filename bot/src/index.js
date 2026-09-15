@@ -3,7 +3,7 @@ import { fileURLToPath } from "node:url";
 import { config, validateConfig } from "./config.js";
 import { log } from "./log.js";
 import { createStore } from "./store.js";
-import { createCli } from "./gmgncli.js";
+import { createCli, createBucket } from "./gmgncli.js";
 import { createTrader } from "./trader.js";
 import { createBot } from "./bot.js";
 import { createMonitor } from "./monitor.js";
@@ -43,7 +43,21 @@ async function main(){
   }
 
   const store = createStore(STATE_FILE);
-  const cli = createCli();
+  /* 限流封禁跨行程記住：封的是 API Key，重啟不會解除。
+     忘記它的話，重啟後第一個請求就會把封禁再延長 5 秒。 */
+  const cli = createCli({
+    bucket: createBucket({
+      initialBanUntil: store.rateLimitBanUntil(),
+      onBan: until => store.setRateLimitBan(until),
+    }),
+  });
+  const bannedMs = cli.bucket.bannedForMs();
+  if(bannedMs > 0){
+    log.warn("啟動時仍在 GMGN 限流封禁中", {
+      secondsLeft: Math.ceil(bannedMs / 1000),
+      note: "期間不會送出任何請求；重啟不會縮短它，只會延長"
+    });
+  }
   const trader = createTrader({ cli, store });
   const botApi = createBot({ cli, store, trader });
   const { say } = botApi;

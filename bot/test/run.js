@@ -1794,6 +1794,59 @@ function freshStore(){
   }
 }
 
+/* ═══ 限流封禁要跨行程記住 ═══
+   封禁綁的是 API Key，不是行程 —— 重啟不會解除它。
+   但漏桶只活在記憶體裡，所以重啟等於忘記自己被封了，第一個請求就打出去，
+   而冷卻期內每送一次請求封禁就延長 5 秒。
+   「卡住了就重啟」是最直覺的反應，也正好是把封禁越拖越長的那個動作。 */
+{
+  const { createBucket } = await import("../src/gmgncli.js");
+
+  let t = 1_000_000;
+  const now = () => t;
+
+  /* 帶著還沒過期的封禁啟動 → 一開始就不能送 */
+  const resumed = createBucket({ now, initialBanUntil: t + 60_000 });
+  assert("帶著封禁啟動時立刻知道還要等", resumed.bannedForMs() === 60_000, String(resumed.bannedForMs()));
+  assert("封禁期間不放行任何請求", resumed.waitMs(1) > 0, String(resumed.waitMs(1)));
+  assert("封禁期間桶子是空的", resumed.level === 0, String(resumed.level));
+
+  /* 封禁過期之後恢復正常 */
+  t += 61_000;
+  assert("封禁過期後放行", resumed.waitMs(1) === 0 && resumed.bannedForMs() === 0);
+
+  /* 已經過期的封禁不該卡住啟動 */
+  const stale = createBucket({ now, initialBanUntil: t - 10_000 });
+  assert("過期的封禁不影響啟動", stale.waitMs(1) === 0 && stale.level > 0);
+
+  /* 撞到 429 要寫出去，而且只往後延 */
+  const written = [];
+  const b = createBucket({ now, onBan: until => written.push(until) });
+  b.ban(t + 30_000);
+  assert("封禁會被記下來", written.length === 1 && written[0] === t + 30_000, JSON.stringify(written));
+  b.ban(t + 10_000);
+  assert("較早的解封時間不會把較晚的洗掉", b.bannedForMs() === 30_000, String(b.bannedForMs()));
+
+  /* 寫檔失敗不能讓交易流程掛掉 —— 記不住比當掉好 */
+  const boom = createBucket({ now, onBan: () => { throw new Error("磁碟滿了"); } });
+  let threw = false;
+  try { boom.ban(t + 5000); } catch { threw = true; }
+  assert("記錄封禁失敗不會往外丟例外", threw === false);
+  assert("就算記不住，這個行程內仍然知道被封了", boom.bannedForMs() === 5000);
+
+  /* store 那一半：只往後延，而且真的存得住 */
+  const store = freshStore();
+  assert("一開始沒有封禁", store.rateLimitBanUntil() === 0);
+  store.setRateLimitBan(5000);
+  assert("寫得進去", store.rateLimitBanUntil() === 5000);
+  store.setRateLimitBan(3000);
+  assert("較早的時間不會覆蓋", store.rateLimitBanUntil() === 5000);
+  store.setRateLimitBan(9000);
+  assert("較晚的時間會延長", store.rateLimitBanUntil() === 9000);
+  store.reload();
+  assert("重新載入之後還在（這就是重啟的意思）", store.rateLimitBanUntil() === 9000);
+}
+
 console.log("");
 if(failures){
   console.log(`${failures} 項測試失敗`);
