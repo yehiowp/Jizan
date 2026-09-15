@@ -1,0 +1,20 @@
+{
+  "name": "gmgn-meme-bot",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "description": "Telegram bot that screens Solana meme coins and executes trades through GMGN's router, with hard risk caps.",
+  "main": "src/index.js",
+  "scripts": {
+    "start": "node src/index.js",
+    "selftest": "node src/selftest.js",
+    "test": "node test/run.js"
+  },
+  "engines": { "node": ">=20" },
+  "dependencies": {
+    "@solana/web3.js": "^1.95.3",
+    "bs58": "^6.0.0",
+    "dotenv": "^16.4.5",
+    "node-telegram-bot-api": "^0.66.0"
+  }
+}
