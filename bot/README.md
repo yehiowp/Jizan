@@ -20,16 +20,19 @@
 |---|---|
 | Node.js 20+ | |
 | `gmgn-cli` | `npm install -g gmgn-cli` |
-| GMGN API Key | `gmgn-cli config` 給你申請連結，拿到後 `gmgn-cli config --apply <KEY>` |
-| 交易錢包 | **`gmgn-cli config` 會幫你產生一個全新錢包**，不是綁你現有的。你要自己匯錢進去。 |
+| GMGN API Key | `gmgn-cli config` 給你申請連結（連結已帶好公鑰），建立後 `gmgn-cli config --apply <KEY>` |
+| 交易錢包 | 在申請頁的「交易錢包」欄位選一個 GMGN 帳戶錢包。**錢要匯到那一個。** |
+| 2FA | 申請頁的「允許交易」權限需要先綁定 2FA |
 | Telegram Bot Token | 跟 [@BotFather](https://t.me/BotFather) 說 `/newbot` |
 | 你的 Telegram ID | 跟 [@userinfobot](https://t.me/userinfobot) 說句話 |
 
 ⚠️ `gmgn-cli` **只走 IPv4**。主機開著 IPv6 會拿到 401/403，而且錯誤訊息看不出真正原因。
 
-⚠️ **那個新錢包的私鑰只存在 `~/.config/gmgn/.env` 這一個地方。** 機器沒了、檔案刪了，錢包裡的錢就拿不回來。只放你打算拿來交易的金額，賺到的錢定期轉回你自己的主錢包。
+⚠️ **`gmgn-cli config` 產生的 Ed25519 金鑰是用來簽 API 請求的，不是交易錢包。** 公鑰上傳到 GMGN，私鑰留在 `~/.config/gmgn/.env`。交易錢包是你在申請頁選的那個 GMGN 帳戶錢包，錢匯到那裡。
 
 ⚠️ **`gmgn-cli config` 每跑一次就產生一組新金鑰。** 拿到連結後不要再跑一次 `config`，否則你申請到的 API Key 會對應到已經被覆蓋掉的舊金鑰。
+
+⚠️ **「交易受信任 IP」留空。** 填了之後家用 IP 一變動（重開機、換網路）API 就會失效，而且錯誤訊息看不出原因。
 
 ## 安裝
 
