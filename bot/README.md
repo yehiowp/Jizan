@@ -282,6 +282,8 @@ npm test
 
 ### Android 手機架設
 
+**Solana Mobile（Saga / Seeker）也是 Android**，跟一般 Android 手機一樣裝，沒有額外步驟。它的 Seed Vault 是給錢包 App 用的，跟這支機器人無關 —— `gmgn-cli` 的簽名金鑰另外存在 `~/.config/gmgn/.env`。
+
 裝 [Termux](https://f-droid.org/packages/com.termux/)（要 F-Droid 版，Play 商店那版太舊），然後：
 
 ```bash

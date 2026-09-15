@@ -15,7 +15,9 @@ echo "── 1/6 更新套件庫 ──"
 pkg update -y
 
 echo "── 2/6 安裝 Node.js 與 git ──"
-pkg install -y nodejs-lts git
+# nodejs-lts 目前是 Node 22。Solana Mobile（Saga / Seeker）是 Android，
+# 跟其他 Android 手機沒有差別，一樣裝得起來。
+pkg install -y nodejs-lts git || pkg install -y nodejs git
 
 node_major=$(node -p "process.versions.node.split('.')[0]")
 if [ "$node_major" -lt 20 ]; then
@@ -29,7 +31,16 @@ npm install -g gmgn-cli
 
 echo "── 4/6 安裝專案相依套件 ──"
 cd "$(dirname "$0")/.."
-npm install
+# --omit=optional：bufferutil 和 utf-8-validate 是 ws 的原生選用相依，
+# 在 Termux/ARM 上要 node-gyp 才編得起來，常常直接失敗。
+# 它們只是加速 WebSocket 的，沒有也完全不影響功能。
+if ! npm install --omit=optional; then
+  echo "   選用相依裝不起來，改用完整安裝再試一次…"
+  npm install || {
+    echo "❌ npm install 失敗。試試先裝編譯工具：pkg install -y build-essential python"
+    exit 1
+  }
+fi
 
 if [ ! -f .env ]; then
   cp .env.example .env
