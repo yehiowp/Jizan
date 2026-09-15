@@ -235,6 +235,16 @@ export function createCli({ bin = "gmgn-cli", execFileImpl = execFile, defaultTi
       return groups.length ? groups.flat() : [];
     },
 
+    /* K 線。--from / --to 是 Unix 秒，所以歷史價格路徑拿得到 ——
+       這是唯一能拿到歷史資料的端點，回測能做的事全部建立在它上面。 */
+    async kline({ chain, address, resolution = "15m", from, to }){
+      const args = ["market", "kline", "--chain", chain, "--address", address, "--resolution", resolution];
+      if(from != null) args.push("--from", Math.floor(from));
+      if(to != null) args.push("--to", Math.floor(to));
+      args.push("--raw");
+      return unwrap(await run(args));
+    },
+
     async search({ query, chain }){
       const args = ["market", "search", "-q", query];
       if(chain) args.push("--chain", chain);           // 想搜全鏈就不要給 --chain

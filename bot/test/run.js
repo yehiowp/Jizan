@@ -1587,6 +1587,120 @@ function freshStore(){
   config.mode.dryRun = before;
 }
 
+/* ═══ 回測引擎 ═══
+   用手刻的 K 線測，因為只有手刻的才知道正確答案是什麼。
+   回測最容易出的錯不是跑不動，是「跑得動但數字是假的」。 */
+{
+  const { normalizeCandles, simulateOne, runToken, buyAndHold, summarize } =
+    await import("../src/backtest.js");
+
+  const bar = (t, o, h, l, c) => ({ time: t, open: o, high: h, low: l, close: c });
+
+  /* ── 格式解析 ── */
+  const parsed = normalizeCandles([bar(3, "1", "2", "0.5", "1.5"), bar(1, 1, 2, 1, 1), bar(2, 1, 1, 1, 1)]);
+  assert("字串價格轉得成數字", parsed[0].o === 1 && typeof parsed[0].o === "number");
+  assert("K 線依時間排序", parsed.map(b => b.t).join(",") === "1,2,3");
+
+  let threw = "";
+  try { normalizeCandles([bar(1, 1, 1, 2, 1), bar(2, 1, 1, 1, 1), bar(3, 1, 1, 1, 1)]); }
+  catch(e){ threw = e.message; }
+  assert("high 小於 low 直接報錯", /high/.test(threw), threw);
+
+  threw = "";
+  try { normalizeCandles([{ time: 1, open: 1 }, { time: 2, open: 1 }, { time: 3, open: 1 }]); }
+  catch(e){ threw = e.message; }
+  assert("缺欄位直接報錯，不猜", /缺少/.test(threw), threw);
+
+  threw = "";
+  try { normalizeCandles({ nope: 1 }); } catch(e){ threw = e.message; }
+  assert("看不懂的格式直接報錯", /格式/.test(threw), threw);
+
+  /* ── 停利：+70% 打得到 ── */
+  const up = normalizeCandles([
+    bar(1, 100, 101, 99, 100),
+    bar(2, 100, 140, 99, 139),
+    bar(3, 139, 180, 138, 175),   // 高點 180 > 170，停利觸發
+  ]);
+  const winTrade = simulateOne(up, { entryIndex: 0, stopPct: 35, targetPct: 70 });
+  assert("停利成交在目標價", Math.abs(winTrade.exit - 170) < 1e-9, String(winTrade.exit));
+  assert("停利的 R = targetR", Math.abs(winTrade.r - 2) < 1e-9, String(winTrade.r));
+  assert("停利標記正確", winTrade.outcome === "target");
+
+  /* ── 停損：-35% ── */
+  const down = normalizeCandles([
+    bar(1, 100, 101, 99, 100),
+    bar(2, 100, 100, 60, 62),     // 低點 60 < 65，停損觸發
+    bar(3, 62, 200, 61, 199),     // 之後噴上去也沒用，已經出場了
+  ]);
+  const loseTrade = simulateOne(down, { entryIndex: 0, stopPct: 35, targetPct: 70 });
+  assert("停損的 R = -1", Math.abs(loseTrade.r + 1) < 1e-9, String(loseTrade.r));
+  assert("出場後不受後面的行情影響", loseTrade.outcome === "stop" && loseTrade.bars === 1);
+
+  /* ── 同一根同時碰到兩邊：必須當停損 ──
+       這是整支程式最重要的一條。假設成停利的話，迷因幣的回測會憑空好一大截。 */
+  const both = normalizeCandles([
+    bar(1, 100, 101, 99, 100),
+    bar(2, 100, 200, 50, 150),    // 高 200 > 170 而且 低 50 < 65
+    bar(3, 150, 151, 149, 150),
+  ]);
+  const amb = simulateOne(both, { entryIndex: 0, stopPct: 35, targetPct: 70 });
+  assert("同根同時觸發時算停損", amb.outcome === "stop" && amb.r < 0, JSON.stringify(amb));
+  assert("同根同時觸發會被標記為 ambiguous", amb.ambiguous === true);
+
+  /* ── 都沒碰到：用最後收盤結算 ── */
+  const flat = normalizeCandles([bar(1, 100, 101, 99, 100), bar(2, 100, 102, 98, 101), bar(3, 101, 103, 99, 102)]);
+  const to = simulateOne(flat, { entryIndex: 0, stopPct: 35, targetPct: 70 });
+  assert("沒觸發任何一邊算 timeout", to.outcome === "timeout");
+  assert("timeout 用收盤價結算", Math.abs(to.exit - 102) < 1e-9, String(to.exit));
+
+  /* ── 滑價一定要讓結果變差，不能變好 ── */
+  const clean = simulateOne(up, { entryIndex: 0, stopPct: 35, targetPct: 70 });
+  const slipped = simulateOne(up, { entryIndex: 0, stopPct: 35, targetPct: 70, slipInPct: 5, slipOutPct: 5 });
+  assert("加了滑價之後 R 一定更低", slipped.r < clean.r, `${clean.r} → ${slipped.r}`);
+
+  /* ── 連續交易不能重疊 ── */
+  const many = normalizeCandles(
+    Array.from({ length: 30 }, (_, i) => bar(i + 1, 100, 101, 99, 100))
+  );
+  const seq = runToken(many, { stopPct: 35, targetPct: 70, maxBars: 3 });
+  for(let i = 1; i < seq.length; i++){
+    assert(`第 ${i + 1} 筆在前一筆出場之後才進場`,
+      seq[i].entryTime > seq[i - 1].exitTime, `${seq[i - 1].exitTime} → ${seq[i].entryTime}`);
+  }
+
+  /* ── 對照組 ── */
+  const bh = buyAndHold(up);
+  assert("買進抱著算的是整段報酬", Math.abs(bh.retPct - 75) < 1e-9, String(bh.retPct));
+
+  /* ── 匯總 ── */
+  const sum = summarize([winTrade, loseTrade, loseTrade], { stopPct: 35, bankrollUsd: 100, positionUsd: 20 });
+  assert("勝率算對", Math.abs(sum.winRate - 1 / 3) < 1e-9, String(sum.winRate));
+  assert("期望值算對（2R 一勝、-1R 兩敗 → 0）", Math.abs(sum.expectancy) < 1e-9, String(sum.expectancy));
+  assert("獲利因子算對（2 / 2）", Math.abs(sum.profitFactor - 1) < 1e-9, String(sum.profitFactor));
+  assert("連敗算對", sum.worstStreak === 2, String(sum.worstStreak));
+  assert("有回撤", sum.maxDD > 0, String(sum.maxDD));
+  assert("空陣列不會炸", summarize([]).n === 0);
+
+  /* ── 停機線 ──
+     不模擬停機線的話，報表會算出「淨值變成負數」的回撤 ——
+     那是一個永遠不會發生的數字，因為機器人早就停了。 */
+  const tenLosses = Array.from({ length: 10 }, () => ({ r: -1, outcome: "stop", ambiguous: false }));
+  /* 每筆風險 $7（20 × 35%），本金 $100，停機線 $60
+     → 100 93 86 79 72 65 58，第 7 筆之前就低於 60 */
+  const halted = summarize(tenLosses, { stopPct: 35, bankrollUsd: 100, positionUsd: 20, killSwitchUsd: 60 });
+  assert("停機線擋下後面的交易", halted.n === 6, String(halted.n));
+  assert("回報在第幾筆停機", halted.halted === 6, String(halted.halted));
+  assert("回報有幾筆沒發生", halted.notTaken === 4, String(halted.notTaken));
+  assert("停機後回撤不會超過 100%", halted.maxDD < 100, String(halted.maxDD));
+
+  const noKill = summarize(tenLosses, { stopPct: 35, bankrollUsd: 100, positionUsd: 20, killSwitchUsd: 0 });
+  assert("沒設停機線就全部計入", noKill.n === 10 && noKill.halted === null, String(noKill.n));
+
+  const tenWins = Array.from({ length: 10 }, () => ({ r: 2, outcome: "target", ambiguous: false }));
+  const noHalt = summarize(tenWins, { stopPct: 35, bankrollUsd: 100, positionUsd: 20, killSwitchUsd: 60 });
+  assert("一路賺不會觸發停機", noHalt.n === 10 && noHalt.halted === null);
+}
+
 console.log("");
 if(failures){
   console.log(`${failures} 項測試失敗`);

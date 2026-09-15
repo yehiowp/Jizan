@@ -11,6 +11,7 @@
     "selftest": "node src/selftest.js",
     "test": "node test/run.js",
     "verify": "node src/verify-fields.js all",
+    "backtest": "node backtest.mjs",
     "doctor": "node doctor.mjs"
   },
   "engines": {
