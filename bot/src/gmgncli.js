@@ -194,6 +194,34 @@ export function createCli({ bin = "gmgn-cli", execFileImpl = execFile, defaultTi
       return unwrap(await run(args, { timeoutMs: 90000 }));
     },
 
+    /* 策略單（停損停利）狀態。type: open = 還掛著，history = 已結束。 */
+    async strategyList({ chain, from, baseToken, type = "open", groupTag, limit = 50 }){
+      const args = ["order", "strategy", "list", "--chain", chain, "--type", type];
+      if(from) args.push("--from", from);
+      if(baseToken) args.push("--base-token", baseToken);
+      if(groupTag) args.push("--group-tag", groupTag);
+      if(limit != null) args.push("--limit", limit);
+      args.push("--raw");
+      const data = unwrap(await run(args));
+      if(Array.isArray(data)) return data;
+      for(const key of ["orders", "list", "items", "data"]){
+        if(Array.isArray(data?.[key])) return data[key];
+      }
+      return [];
+    },
+
+    /* 錢包裡還有沒有這顆幣。用來確認伺服器端的停損是不是真的賣掉了。 */
+    async tokenBalance({ chain, wallet, token }){
+      const data = unwrap(await run(["portfolio", "token-balance",
+        "--chain", chain, "--wallet", wallet, "--token", token, "--raw"]));
+      /* 欄位名稱各版本可能不同，能拿到哪個算哪個；全都拿不到就回 null（＝未知，不是 0） */
+      for(const key of ["balance", "amount", "token_amount", "raw_amount", "ui_amount", "usd_value"]){
+        const v = data?.[key];
+        if(v != null && v !== "") return { amount: parseFloat(v) || 0, field: key, raw: data };
+      }
+      return { amount: null, field: null, raw: data };
+    },
+
     async orderGet({ chain, orderId }){
       return unwrap(await run(["order", "get", "--chain", chain, "--order-id", orderId, "--raw"]));
     },

@@ -9,6 +9,7 @@ import { createBot } from "./bot.js";
 import { createMonitor } from "./monitor.js";
 import { createAutoTrader } from "./autotrader.js";
 import { createNarrative } from "./narrative.js";
+import { createReconciler } from "./reconcile.js";
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 const STATE_FILE = path.join(here, "..", "data", "state.json");
@@ -45,7 +46,8 @@ async function main(){
   const trader = createTrader({ cli, store });
   const botApi = createBot({ cli, store, trader });
   const { say } = botApi;
-  const monitor = createMonitor({ store, trader, say });
+  const reconciler = createReconciler({ cli, store, trader, say });
+  const monitor = createMonitor({ store, trader, say, reconciler });
   const autoTrader = createAutoTrader({ store, trader, say });
   botApi.attachAutoTrader(autoTrader);
   botApi.attachNarrative(createNarrative({ cli }));

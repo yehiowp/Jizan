@@ -945,6 +945,131 @@ function freshStore(){
   }
 }
 
+/* ═══════════════════════════ 16. 對帳（伺服器端出場同步回帳本） ═══════════════════════════ */
+{
+  const { createReconciler } = await import("../src/reconcile.js");
+
+  function reconSetup({ openStrategies = [], history = [], balance = null, balanceErr = false } = {}){
+    const store = freshStore();
+    const said = [];
+    const cli = createCli({ execFileImpl: (bin, argv, o, cb) => {
+      const join = argv.join(" ");
+      if(join.startsWith("order strategy list")){
+        const type = argv[argv.indexOf("--type") + 1];
+        return cb(null, JSON.stringify({ code: 0, data: type === "history" ? history : openStrategies }), "");
+      }
+      if(join.startsWith("portfolio token-balance")){
+        if(balanceErr) return cb(new Error("boom"), "", "boom");
+        return cb(null, JSON.stringify({ code: 0, data: balance ?? {} }), "");
+      }
+      if(join.startsWith("token info")) return cb(null, JSON.stringify({ code: 0, data: healthyInfo() }), "");
+      return cb(null, JSON.stringify({ code: 0, data: {} }), "");
+    }});
+    const trader = createTrader({ cli, store });
+    const rec = createReconciler({ cli, store, trader, say: m => { said.push(m); return Promise.resolve(); } });
+
+    store.addPosition({
+      id: "p1", chain: "sol", tokenAddress: "Tok1", symbol: "GDOG",
+      openedAt: new Date().toISOString(), costUsd: 20, entryPrice: 1, lastPrice: 0.6,
+      stopPrice: 0.65, targetPrice: 1.7, stopPct: 35, targetR: 2, riskUsd: 7,
+      strategyOrderId: "strat-1", dryRun: false
+    });
+    return { store, rec, said };
+  }
+
+  /* 兩道證據都成立 → 平倉入帳 */
+  {
+    const { store, rec, said } = reconSetup({
+      openStrategies: [],
+      history: [{ order_id: "strat-1", price_usd: "0.64" }],
+      balance: { balance: "0" }
+    });
+    const r = await rec.run();
+    assert("兩道證據齊全就平倉", r.closed === 1 && store.openPositions().length === 0, JSON.stringify(r));
+    const t = store.closedTrades()[0];
+    assert("用策略單的成交價入帳", near(t.exitPrice, 0.64, 1e-9), String(t.exitPrice));
+    assert("虧損真的入帳了", t.pnlUsd < 0 && near(t.pnlUsd, 20 * (0.64 - 1), 1e-9), String(t.pnlUsd));
+    assert("有通知使用者", said.some(m => m.includes("已由 GMGN 伺服器端出場")), said[0]?.slice(0, 40));
+  }
+
+  /* 策略單還掛著、錢包還有幣 → 什麼都不該做 */
+  {
+    const { store, rec, said } = reconSetup({
+      openStrategies: [{ order_id: "strat-1" }],
+      balance: { balance: "12345" }
+    });
+    const r = await rec.run();
+    assert("部位還活著時不動帳", r.closed === 0 && store.openPositions().length === 1, JSON.stringify(r));
+    assert("部位還活著時不吵人", said.length === 0, JSON.stringify(said));
+  }
+
+  /* 只有一道證據 → 示警但不動帳 */
+  {
+    const { store, rec, said } = reconSetup({
+      openStrategies: [],                       // 策略單不見了
+      balance: { balance: "5000" }              // 但幣還在
+    });
+    const r = await rec.run();
+    assert("只有一道證據時不自己平倉", r.closed === 0 && store.openPositions().length === 1, JSON.stringify(r));
+    assert("只有一道證據時要示警", r.flagged === 1 && said.some(m => m.includes("對不上")), JSON.stringify(said));
+    /* 六小時內同一個部位不重複洗版 */
+    const again = await rec.run();
+    assert("同一個對不上的部位不重複通知", again.flagged === 1 && said.length === 1, String(said.length));
+  }
+
+  /* 查詢失敗 = 未知，絕不能當成已出場 */
+  {
+    const { store, rec } = reconSetup({ openStrategies: [], balanceErr: true });
+    const r = await rec.run();
+    assert("查餘額失敗時不平倉（未知不等於已出場）",
+      r.closed === 0 && store.openPositions().length === 1, JSON.stringify(r));
+  }
+
+  /* 餘額欄位整個拿不到 → 一樣算未知 */
+  {
+    const { store, rec } = reconSetup({ openStrategies: [], balance: {} });
+    const r = await rec.run();
+    assert("餘額欄位缺失時不平倉", r.closed === 0 && store.openPositions().length === 1, JSON.stringify(r));
+  }
+
+  /* 拿不到成交價時退回最後報價，並標示為估算 */
+  {
+    const { store, rec, said } = reconSetup({
+      openStrategies: [], history: [], balance: { balance: "0" }
+    });
+    await rec.run();
+    const t = store.closedTrades()[0];
+    assert("沒有成交價就用最後報價", near(t.exitPrice, 0.6, 1e-9), String(t.exitPrice));
+    assert("估算要講明", said.some(m => m.includes("估算")), said[0]?.slice(0, 80));
+  }
+
+  /* 模擬倉不對帳（它本來就沒有鏈上部位） */
+  {
+    const store = freshStore();
+    const cli = createCli({ execFileImpl: makeExecFile() });
+    const trader = createTrader({ cli, store });
+    const rec = createReconciler({ cli, store, trader, say: () => Promise.resolve() });
+    store.addPosition({ id: "d1", chain: "sol", tokenAddress: "T", symbol: "DRY", costUsd: 20,
+                        entryPrice: 1, lastPrice: 1, stopPrice: 0.65, targetPrice: 1.7,
+                        riskUsd: 7, dryRun: true, openedAt: new Date().toISOString() });
+    const r = await rec.run();
+    assert("模擬倉不進對帳", r.checked === 0 && store.openPositions().length === 1, JSON.stringify(r));
+  }
+
+  /* 對帳造成的虧損要能觸發停機 —— 這正是沒有對帳時失效的那道防線 */
+  {
+    /* 停損在暴跌中成交在 0.01（進場 1）→ 這一筆就虧掉 $19.8 */
+    const { store, rec } = reconSetup({
+      openStrategies: [], history: [{ order_id: "strat-1", price_usd: "0.01" }], balance: { balance: "0" }
+    });
+    store.recordTrade({ id: "old", symbol: "OLD", closedAt: new Date().toISOString(), pnlUsd: -5, r: -1 });
+    await rec.run();
+    assert("對帳入帳後單日止血線會被觸發",
+      store.state.tradingEnabled === false && /單日虧損|停機線/.test(store.state.disabledReason),
+      `today=${store.realizedToday()} reason=${store.state.disabledReason}`);
+  }
+}
+
 console.log("");
 if(failures){
   console.log(`${failures} 項測試失敗`);

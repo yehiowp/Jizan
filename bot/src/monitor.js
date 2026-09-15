@@ -4,11 +4,25 @@ import { log } from "./log.js";
 
 /* 停損停利是掛在 GMGN 伺服器端執行的，這裡不負責出場。
    這支只做三件事：更新報價、在接近停損時提醒、偵測「該觸發卻還在持倉」的異常。 */
-export function createMonitor({ store, trader, say, cfg = config }){
+export function createMonitor({ store, trader, say, reconciler = null, cfg = config }){
   let timer = null;
   const warned = new Set();
 
   async function tick(){
+    if(!store.openPositions().length) return;
+
+    /* 先對帳：伺服器端可能已經幫你停損出場了，機器人不會收到通知。
+       不先做這件事，下面就會對著一個早就不存在的部位算未實現損益。 */
+    if(reconciler){
+      try {
+        const r = await reconciler.run();
+        if(r.closed) log.info("對帳平掉了部位", { closed: r.closed, flagged: r.flagged });
+      } catch(e){
+        if(e.code === "RATE_LIMIT") return;
+        log.warn("對帳出錯", { error: e.message });
+      }
+    }
+
     const open = store.openPositions();
     if(!open.length) return;
 
