@@ -182,9 +182,27 @@ if(env.TELEGRAM_TOKEN){
   } else {
   const r = await runCli(["portfolio", "info", "--raw"], 30000);
   if(r.err){
-    const msg = (r.errOut || r.out).trim().slice(0, 120);
-    if(/API_KEY/i.test(msg)) add("skip", "錢包餘額", "API Key 還沒設定，跳過");
-    else add("warn", "錢包餘額", msg || "查詢失敗", "確認 API Key 與網路");
+    const msg = (r.errOut || r.out).trim();
+    const short = msg.slice(0, 120);
+
+    if(/API_KEY/i.test(msg)){
+      add("skip", "錢包餘額", "API Key 還沒設定，跳過");
+    } else if(/RATE_LIMIT|429/i.test(msg)){
+      /* 限流時最不能做的事就是再試一次 —— GMGN 文件寫明每重試一次封禁延長 5 秒，
+         最多到 5 分鐘。舊版這裡寫「確認 API Key 與網路」，等於在叫人重跑，
+         會把自己越關越久。 */
+      const reset = msg.match(/reset_at"?\s*[:=]\s*"?(\d{9,})/)?.[1];
+      const when = reset ? new Date(parseInt(reset, 10) * 1000).toLocaleString() : null;
+      add("warn", "錢包餘額", "IP 被 GMGN 限流暫時封鎖（HTTP 429）",
+        `${when ? `等到 ${when} 再試。` : "等 5 分鐘再試。"}` +
+        "\n     ⚠️ 這段期間不要重跑任何 gmgn-cli 指令，包括這個診斷 ——" +
+        "\n        每重試一次封禁就延長 5 秒（最多 5 分鐘）。" +
+        "\n     ✅ 但這代表你的 API Key 是有效的：能拿到 429 就表示請求有通過認證。");
+    } else if(/401|403|UNAUTHORIZED/i.test(msg)){
+      add("fail", "錢包餘額", "GMGN 認證失敗", "確認 API Key；另外 gmgn-cli 只走 IPv4，開著 IPv6 會出現這個錯");
+    } else {
+      add("warn", "錢包餘額", short || "查詢失敗", "把這段訊息貼出來看");
+    }
   } else {
     try {
       const j = JSON.parse(r.out);
