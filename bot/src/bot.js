@@ -139,6 +139,7 @@ export function createBot({ cli, store, trader, cfg = config }){
         autoLine(),
         `交易開關：${store.state.tradingEnabled ? "開啟" : `停用（${store.state.disabledReason}）`}`,
         `GMGN CLI：${cfgCheck.ok ? "已設定" : `未通過（${cfgCheck.error ?? ""}）`}`,
+        `候選來源：${cfg.radar.url ? `本機雷達 ${cfg.radar.url}` : "GMGN 熱門榜"}`,
         "",
         `持倉 ${open.length}/${cfg.risk.maxOpenPositions}　在場資金 ${usd(store.deployedUsd())}/${usd(cfg.risk.maxDeployedUsd)}`,
         `今日已實現 ${usd(store.realizedToday())}　（上限 ${usd(-cfg.risk.maxDailyLossUsd)}）`,

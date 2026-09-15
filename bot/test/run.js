@@ -210,6 +210,18 @@ function freshStore(){
   assert("空字串稅率不會被當成高稅攔下", !untaxed.flags.some(f => f.includes("賣出稅")));
 
   /* 代幣名稱是鏈上任意欄位，要能清掉注入內容 */
+  /* 雙向文字覆寫：不是隱形字元，是會「重排後面的字」。
+     一個幣名可以靠它讓 Telegram 上顯示的地址跟實際送出去的不一樣。 */
+  {
+    const RTL = String.fromCharCode(0x202e);
+    const LRO = String.fromCharCode(0x202d);
+    const ISO = String.fromCharCode(0x2066);
+    const dirty = sanitize("A" + RTL + "B" + LRO + "C" + ISO + "D", 40);
+    assert("清掉雙向文字覆寫字元",
+      !dirty.includes(RTL) && !dirty.includes(LRO) && !dirty.includes(ISO), JSON.stringify(dirty));
+    assert("清掉之後正常的字還在", dirty === "ABCD", JSON.stringify(dirty));
+  }
+
   assert("清掉控制字元與標記", sanitize("AB C<script>​") === "ABCscript",
     JSON.stringify(sanitize("AB C<script>​")));
   assert("名稱長度設上限", sanitize("x".repeat(200)).length <= 40);
@@ -1929,6 +1941,175 @@ function freshStore(){
   assert("有把 GMGN_RATE_LIMIT_AUTO_RETRY_MAX_WAIT_MS 傳給 CLI",
     passedEnv?.GMGN_RATE_LIMIT_AUTO_RETRY_MAX_WAIT_MS === "90000",
     String(passedEnv?.GMGN_RATE_LIMIT_AUTO_RETRY_MAX_WAIT_MS));
+}
+
+/* ═══ 本機 Meme 雷達當候選來源 ═══
+   雷達是另一支程式（meme-radar），它的輸出一律當成不可信資料。
+   這裡最重要的一條性質：**雷達只能縮小名單，不能核可任何一顆幣**。 */
+{
+  const { createRadar, normalizeCandidate, validAddress } = await import("../src/radar.js");
+
+  const SOL = "Tok1111111111111111111111111111111111111111";
+  const EVM = "0x" + "a".repeat(40);
+  const RTL = String.fromCharCode(0x202e);   // 右到左覆寫，會讓幣名在畫面上反著顯示
+  const NUL = String.fromCharCode(0);
+
+  /* ── 地址驗證 ── */
+  assert("Solana 地址通過", validAddress(SOL, "sol"));
+  assert("EVM 地址在 bsc 通過", validAddress(EVM, "bsc"));
+  assert("EVM 地址不能當 Solana 地址", validAddress(EVM, "sol") === false);
+  assert("亂填的地址擋下", validAddress("not-an-address", "sol") === false);
+  assert("空地址擋下", validAddress("", "sol") === false);
+
+  /* ── 正規化 ── */
+  const good = normalizeCandidate({
+    address: SOL, chain: "sol", symbol: "GDOG", name: "Good Dog",
+    liquidity: 360000, volume1h: 900000, holders: 1800, buys: 1400, sells: 1000,
+    price: 0.0012, marketCap: 5e6, discoveryScore: 88, status: "REVIEW",
+    decisionReason: "流動性充足",
+  }, { chain: "sol" });
+  assert("正常的列轉得出來", good && good.address === SOL, JSON.stringify(good));
+  assert("欄位對到評分器看得懂的名字",
+    good.volume === 900000 && good.holder_count === 1800, JSON.stringify(good));
+  assert("買賣筆數加總成 swaps", good.swaps === 2400, String(good.swaps));
+  assert("標記來源", good._source === "radar");
+
+  /* ── 鏈對不上一定要丟掉 ──
+       拿別條鏈的地址去下單，最好的情況才是失敗。 */
+  assert("鏈對不上丟掉",
+    normalizeCandidate({ address: EVM, chain: "bsc" }, { chain: "sol" }) === null);
+
+  /* ── 讀不到的欄位要留空，不能補 0 ──
+       補 0 會讓「讀不到」看起來像「真的是 0」，那是最糟的一種假資料。 */
+  const sparse = normalizeCandidate({ address: SOL, chain: "sol" }, { chain: "sol" });
+  assert("沒有的欄位是 undefined 不是 0", sparse.liquidity === undefined, String(sparse.liquidity));
+  assert("沒有買賣數就沒有 swaps", sparse.swaps === undefined, String(sparse.swaps));
+
+  /* ── 雷達自己拒絕的就不要再花 GMGN 額度 ── */
+  assert("雷達拒絕的排除",
+    normalizeCandidate({ address: SOL, chain: "sol", status: "REJECTED" }, { chain: "sol" }) === null);
+
+  /* ── 幣名是鏈上欄位，發幣的人想寫什麼就寫什麼 ── */
+  const nasty = normalizeCandidate({
+    address: SOL, chain: "sol",
+    symbol: "A" + RTL + "B<script>alert(1)</script>" + NUL + "C",
+    name: "x".repeat(500),
+  }, { chain: "sol" });
+  assert("幣名過濾掉控制字元與標記",
+    !nasty.symbol.includes(RTL) && !nasty.symbol.includes(NUL)
+      && !nasty.symbol.includes("<") && !nasty.symbol.includes(">"),
+    JSON.stringify(nasty.symbol));
+  assert("名稱有長度上限", nasty.name.length <= 80, String(nasty.name.length));
+
+  /* ── 垃圾輸入不會讓整輪爆掉 ── */
+  for(const junk of [null, undefined, 42, "字串", [], { nope: 1 }]){
+    assert(`垃圾輸入 ${JSON.stringify(junk)} 回 null`,
+      normalizeCandidate(junk, { chain: "sol" }) === null);
+  }
+
+  /* ── HTTP 層 ── */
+  const mkRadar = (handler, opts = {}) =>
+    createRadar({ url: "http://127.0.0.1:3791", fetchImpl: handler, ...opts });
+
+  const okBody = {
+    candidates: [
+      { address: SOL, chain: "sol", symbol: "A", discoveryScore: 10, liquidity: 1 },
+      { address: "Tok2222222222222222222222222222222222222222", chain: "sol", symbol: "B", discoveryScore: 90, liquidity: 2 },
+      { address: EVM, chain: "bsc", symbol: "WRONG" },
+      { address: SOL, chain: "sol", status: "REJECTED" },
+    ],
+    requestMetrics: { rateLimits: 3, cooldownUntil: 999 },
+    gmgnConnection: { configured: true },
+    scheduler: { scanningChain: "sol", lastSuccessAt: 123 },
+  };
+
+  const r = mkRadar(async () => ({ ok: true, status: 200, json: async () => okBody }));
+  const got = await r.candidates({ chain: "sol" });
+  assert("只留下這條鏈上沒被拒絕的", got.rows.length === 2, String(got.rows.length));
+  assert("依雷達的發現分數排序", got.rows[0].symbol === "B", got.rows[0].symbol);
+  assert("帶回雷達自己的限流狀態", got.rateLimits === 3 && got.cooldownUntil === 999);
+
+  /* ── 「雷達沒開」跟「雷達說沒有候選」必須分得出來 ──
+       混為一談的話，雷達掛掉會看起來像「今天沒有機會」。 */
+  let err = null;
+  try {
+    await mkRadar(async () => { throw new Error("ECONNREFUSED"); }).candidates({ chain: "sol" });
+  } catch(e){ err = e; }
+  assert("連不上要丟錯，不是回空陣列", err !== null && /連不上雷達/.test(err.message), String(err && err.message));
+
+  err = null;
+  try {
+    await mkRadar(async () => ({ ok: false, status: 500, json: async () => ({}) })).candidates({ chain: "sol" });
+  } catch(e){ err = e; }
+  assert("HTTP 500 要丟錯", err !== null && /500/.test(err.message), String(err && err.message));
+
+  err = null;
+  try {
+    await mkRadar(async () => ({ ok: true, status: 200, json: async () => ({ nope: 1 }) })).candidates({ chain: "sol" });
+  } catch(e){ err = e; }
+  assert("回傳裡沒有 candidates 要丟錯", err !== null && /candidates/.test(err.message), String(err && err.message));
+
+  const empty = await mkRadar(async () => ({ ok: true, status: 200, json: async () => ({ candidates: [] }) }))
+    .candidates({ chain: "sol" });
+  assert("真的沒有候選時回空陣列，不丟錯", empty.rows.length === 0);
+
+  assert("沒設網址就不給建立", (() => {
+    try { createRadar({ url: "" }); return false; } catch { return true; }
+  })());
+}
+
+/* ═══ 雷達不能核可任何一顆幣 ═══
+   這是整個接法的安全核心，所以單獨測：
+   雷達的列沒有安全欄位，而閘門對未知欄位不扣分 —— 直接拿去當閘門輸入的話，
+   每顆幣都會以「沒有紅旗」的姿態通過。所以買不買必須由 vet() 之後的閘門決定。 */
+{
+  const store = freshStore();
+  const SOL = "Tok1111111111111111111111111111111111111111";
+
+  /* 用雷達實際會給的欄位。欄位太稀疏的列會被紅旗擋在候選之外 ——
+     那是對的：不知道流動性不等於流動性沒問題。 */
+  const radar = {
+    candidates: async () => ({ rows: [{
+      address: SOL, chain: "sol", symbol: "GDOG",
+      liquidity: 360000, volume: 900000, holder_count: 1800,
+      buys: 1400, sells: 1000, swaps: 2400, price: 0.0012,
+      _radarScore: 99, _source: "radar",
+    }] }),
+  };
+
+  /* 這顆幣在 GMGN 那邊是貔貅 */
+  const cli = createCli({ execFileImpl: makeExecFile({
+    security: { ...healthySecurity(), is_honeypot: 1 },
+  }) });
+  const trader = createTrader({ cli, store, radar });
+
+  const scanned = await trader.scan({ chains: ["sol"] });
+  assert("雷達的幣進得了候選名單", scanned.candidates.length === 1, String(scanned.candidates.length));
+  assert("但會被標成未驗證", scanned.candidates[0].unverified === true);
+  assert("來源標成 radar", scanned.candidates[0].source === "radar");
+
+  const vetted = await trader.vet({ address: SOL, chain: "sol" });
+  assert("雷達推薦的貔貅仍然被閘門擋下",
+    vetted.gate.pass === false, JSON.stringify((vetted.gate && vetted.gate.blocks) || []));
+  assert("擋下的理由是貔貅",
+    vetted.gate.blocks.some(b => /蜜罐|貔貅|honeypot/i.test(b)), JSON.stringify(vetted.gate.blocks));
+
+  /* 雷達掛掉時不要偷偷改用 GMGN 熱門榜 */
+  const deadRadar = { candidates: async () => { throw new Error("ECONNREFUSED"); } };
+  const t2 = createTrader({ cli, store: freshStore(), radar: deadRadar });
+  const none = await t2.scan({ chains: ["sol"] });
+  assert("雷達掛掉時這條鏈沒有候選，而不是改敲 GMGN",
+    none.all.length === 0, String(none.all.length));
+
+  /* 欄位太稀疏的雷達列不該進候選 —— 不知道流動性不等於流動性沒問題 */
+  const sparseRadar = {
+    candidates: async () => ({ rows: [{
+      address: SOL, chain: "sol", symbol: "MYSTERY", _radarScore: 99, _source: "radar",
+    }] }),
+  };
+  const t3 = createTrader({ cli, store: freshStore(), radar: sparseRadar });
+  const thin = await t3.scan({ chains: ["sol"] });
+  assert("雷達給的資料不足時不進候選", thin.candidates.length === 0, String(thin.candidates.length));
 }
 
 console.log("");

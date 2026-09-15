@@ -5,6 +5,7 @@ import { log } from "./log.js";
 import { createStore } from "./store.js";
 import { createCli, createBucket } from "./gmgncli.js";
 import { createTrader } from "./trader.js";
+import { createRadar } from "./radar.js";
 import { createBot } from "./bot.js";
 import { createMonitor } from "./monitor.js";
 import { createAutoTrader } from "./autotrader.js";
@@ -59,7 +60,20 @@ async function main(){
       note: "期間不會送出任何請求；重啟不會縮短它，只會延長"
     });
   }
-  const trader = createTrader({ cli, store });
+  /* 本機雷達：設了就由它提供候選，機器人不再自己敲 GMGN 熱門榜。
+     連不上不會讓機器人起不來 —— 但也不會默默改用 GMGN（那會把限流問題放回來）。 */
+  let radar = null;
+  if(config.radar.url){
+    radar = createRadar({ url: config.radar.url });
+    try {
+      await radar.health();
+      log.info("已接上本機雷達", { url: radar.url, fallback: config.radar.fallbackToGmgn });
+    } catch(e){
+      log.warn("雷達連不上（機器人照常啟動）", { url: radar.url, error: e.message });
+    }
+  }
+
+  const trader = createTrader({ cli, store, radar });
   const botApi = createBot({ cli, store, trader });
   const { say } = botApi;
   const reconciler = createReconciler({ cli, store, trader, say });

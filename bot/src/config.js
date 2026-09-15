@@ -83,6 +83,14 @@ export const config = {
        多鏈只影響掃描範圍；風控上限（部位數、在場資金、單日虧損）仍然是全域共用的。 */
     chains: str("CHAINS", "").split(",").map(x => x.trim()).filter(Boolean)
   },
+  /* 本機 Meme 雷達（meme-radar）。設了就用它取候選，不再自己敲 GMGN 的熱門榜。
+     它只縮小名單，不核可任何一顆幣 —— 買不買仍然由機器人自己 vet() 之後的閘門決定。 */
+  radar: {
+    url: str("RADAR_URL", ""),
+    /* 雷達連不上時要不要改用 GMGN 熱門榜。預設 false：
+       接雷達的目的就是不要兩個程式搶同一份額度，自動退回去等於默默把問題放回來。 */
+    fallbackToGmgn: bool("RADAR_FALLBACK_TO_GMGN", false)
+  },
   mode: {
     dryRun: bool("DRY_RUN", true),
     /* 自動交易：預設關閉。開啟後還要在 Telegram 用 /auto on 武裝，

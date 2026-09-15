@@ -173,9 +173,14 @@ export function sanitize(s, maxLen = 40){
   for(const chr of s){
     const cp = chr.codePointAt(0);
     const isControl = cp < 0x20 || (cp >= 0x7f && cp <= 0x9f);
+    /* 雙向文字覆寫字元（0x202a-0x202e、0x2066-0x2069、0x061c）也要濾掉。
+       它們不是隱形的，是會「重排後面的字」—— 一個幣名可以靠它在 Telegram 上
+       把地址或數字顯示成相反的順序，你看到的跟實際送出去的不是同一個東西。
+       0x200b-0x200f 只擋到零寬字元和前兩個方向標記，擋不到覆寫那一段。 */
     const isInvisible = (cp >= 0x200b && cp <= 0x200f) || cp === 0x2028 || cp === 0x2029 || cp === 0xfeff;
+    const isBidi = (cp >= 0x202a && cp <= 0x202e) || (cp >= 0x2066 && cp <= 0x2069) || cp === 0x061c;
     const isMarkup = chr === "<" || chr === ">" || chr === "&";
-    if(isControl || isInvisible || isMarkup) continue;
+    if(isControl || isInvisible || isBidi || isMarkup) continue;
     out += chr;
     if(out.length >= maxLen) break;
   }

@@ -4,7 +4,7 @@ import { evaluateGate } from "./gate.js";
 import { checkBuy } from "./risk.js";
 import { log } from "./log.js";
 
-export function createTrader({ cli, store, cfg = config }){
+export function createTrader({ cli, store, cfg = config, radar = null }){
   /* 預設鏈，以及要掃描的所有鏈 */
   const defaultChain = cfg.gmgn.chain;
   const scanChains = cfg.gmgn.chains.length ? cfg.gmgn.chains : [defaultChain];
@@ -58,6 +58,27 @@ export function createTrader({ cli, store, cfg = config }){
       /* 每條鏈各抓 trending + 熱搜，全部平行。
          其中一條掛掉不影響其他條；任何一條限流就整輪停手。 */
       const perChain = await Promise.all(chains.map(async c => {
+        /* 雷達模式：候選由本機雷達提供，這一輪完全不敲 GMGN 的熱門榜。
+
+           注意這裡拿到的列**沒有安全欄位** —— 閘門對未知欄位不扣分，
+           所以這些列在評分階段看起來都會是「沒有紅旗」。
+           那不代表它們乾淨，只代表還沒驗。真正的判斷在 vet() 之後的閘門，
+           那裡讀的是 GMGN 的原始欄位。雷達只決定「先驗誰」。 */
+        if(radar){
+          try {
+            const { rows } = await radar.candidates({ chain: c, limit });
+            return rows.map(r => ({ ...r, _scanChain: c }));
+          } catch(e){
+            if(!cfg.radar.fallbackToGmgn){
+              /* 不默默退回去敲 GMGN：那正是我們想避免的「兩邊搶額度」。
+                 讓這條鏈這一輪沒有候選，並把原因往上丟。 */
+              log.warn("雷達取不到候選，這一輪跳過這條鏈", { chain: c, error: e.message });
+              return [];
+            }
+            log.warn("雷達取不到候選，改用 GMGN 熱門榜", { chain: c, error: e.message });
+          }
+        }
+
         const [trendRows, hotRows] = await Promise.all([
           cli.trending({
             chain: c,
@@ -85,15 +106,27 @@ export function createTrader({ cli, store, cfg = config }){
         .map(r => [`${r._scanChain}:${r.address}`, r])).values()];
 
       const coins = rows
-        .map(r => evaluate(r, { minDepthUsd: cfg.filter.minDepthUsd, chain: r._scanChain }))
-        .sort((a, b) => b.score - a.score);
+        .map(r => {
+          const c = evaluate(r, { minDepthUsd: cfg.filter.minDepthUsd, chain: r._scanChain });
+          /* 標記來源，讓 /scan 的輸出不會把「還沒驗」講成「驗過了」。
+             雷達來的列少了安全欄位，分數天生偏低也偏不可靠，
+             所以排序改用雷達自己的發現分數。 */
+          return r._source === "radar"
+            ? { ...c, source: "radar", radarStatus: r._radarStatus, radarReason: r._radarReason,
+                radarScore: r._radarScore, unverified: true }
+            : c;
+        })
+        .sort((a, b) => (b.source === "radar" ? b.radarScore : b.score)
+                      - (a.source === "radar" ? a.radarScore : a.score));
 
       const cooldownMs = cfg.filter.alertCooldownHours * 3600 * 1000;
       return {
         all: coins,
         candidates: coins.filter(c =>
           c.flags.length === 0 &&
-          c.score >= cfg.filter.minScore &&
+          /* 雷達來的列沒有安全欄位，分數門檻套在上面沒有意義（分母都不一樣）。
+             它們要通過的是 vet() 之後的閘門，那裡標準沒有放寬半點。 */
+          (c.source === "radar" || c.score >= cfg.filter.minScore) &&
           !store.wasSeen(c.address, cooldownMs) &&
           !store.wasRejected(c.address)
         )
