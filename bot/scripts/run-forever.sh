@@ -10,6 +10,21 @@ MAX_BYTES=$((5 * 1024 * 1024))     # 5MB 就輪替，手機空間有限
 
 cd "$(dirname "$0")/.." || exit 1
 
+# ── wake lock ──
+# 螢幕關掉之後，Android 會把背景程式凍結：不報錯、不留紀錄、什麼都不做。
+# 這個鎖是唯一的例外，也是手機掛機能不能活下去的關鍵。
+# 它會在中途消失 —— 通知列上那個鎖被手動點掉、或 Termux 被系統回收後重生，
+# 都會讓它不見。所以定期重抓；這個動作是冪等的，本來就持有也不會怎樣。
+if command -v termux-wake-lock >/dev/null 2>&1; then
+  ( while true; do termux-wake-lock >/dev/null 2>&1; sleep 1800; done ) &
+  WAKE_PID=$!
+  trap 'kill "$WAKE_PID" 2>/dev/null' EXIT INT TERM
+  echo "$(date -Iseconds) wake lock 已開啟（每 30 分鐘重抓一次）" >> "$LOG"
+else
+  echo "$(date -Iseconds) ⚠️ 沒有 termux-wake-lock：螢幕關掉後機器人會被系統凍結。" >> "$LOG"
+  echo "$(date -Iseconds)    pkg install -y termux-api，並到 F-Droid 裝 Termux:API App" >> "$LOG"
+fi
+
 while true; do
   # 紀錄檔輪替：只留最近一份舊的
   if [ -f "$LOG" ]; then

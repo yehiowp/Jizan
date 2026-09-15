@@ -29,6 +29,20 @@ function runCli(args, timeout = 20000){
   });
 }
 
+/* 跑一般指令（不是 gmgn-cli）。這裡要分得出三種結果：
+   沒這個指令、指令卡住不回應、正常跑完 —— Termux:API 的診斷完全靠這個區分。 */
+function runCmd(cmd, args = [], timeout = 8000){
+  return new Promise(res => {
+    execFile(cmd, args, { timeout, windowsHide: true }, (err, stdout, stderr) => res({
+      err,
+      missing: !!err && /ENOENT/.test(String(err)),
+      timedOut: !!err && (err.killed === true || err.signal === "SIGTERM"),
+      out: String(stdout ?? ""),
+      errOut: String(stderr ?? "")
+    }));
+  });
+}
+
 /* ── 1. Node ── */
 {
   const major = parseInt(process.versions.node.split(".")[0], 10);
@@ -235,6 +249,77 @@ if(env.TELEGRAM_TOKEN){
       add("warn", "錢包餘額", "回傳不是 JSON", "直接跑 gmgn-cli portfolio info 看訊息");
     }
   }
+  }
+}
+
+/* ── 6. Android（Termux）：螢幕關掉之後還活不活得下去 ──
+   手機掛機最常見的死因不是當機，是 Android 把它凍結：螢幕一關，
+   系統把背景程式停在那裡，不報錯、不留紀錄、不會有任何通知。
+   從外面看跟「今天沒有符合條件的幣」長得一模一樣。 */
+{
+  const TERMUX = !!(process.env.PREFIX && process.env.PREFIX.includes("com.termux"))
+    || fs.existsSync("/data/data/com.termux/files/usr");
+
+  if(TERMUX){
+    /* termux-api 這個「套件」跟 Termux:API 這個「App」是兩件事。
+       pkg install termux-api 只裝了指令稿；真正去跟 Android 要 wake lock 的
+       是那支 App。App 沒裝的話，指令不會報錯 —— 它會一直等下去。
+       所以這裡用「逾時」當判斷依據，而不是看離開碼。 */
+    const probe = await runCmd("termux-battery-status", [], 8000);
+
+    if(probe.missing){
+      add("fail", "Termux:API", "沒有安裝，wake lock 用不了",
+        "pkg install -y termux-api\n     然後到 F-Droid 裝 Termux:API 這支 App（兩個都要）");
+    } else if(probe.timedOut){
+      add("fail", "Termux:API App", "指令稿裝了，但 Termux:API App 沒裝（指令卡住不回應）",
+        "到 F-Droid 裝 Termux:API，開一次讓它拿到權限。\n" +
+        "     ⚠️ 兩邊必須是同一個來源：Play 商店版的 Termux 跟 F-Droid 版簽章不同，\n" +
+        "        混著裝的話 App 會裝得起來但完全沒作用。");
+    } else {
+      let plugged = null, level = null;
+      try {
+        const b = JSON.parse(probe.out);
+        plugged = b?.plugged && b.plugged !== "UNPLUGGED";
+        level = b?.percentage;
+      } catch { /* 格式不如預期就只當作「App 有回應」 */ }
+
+      add("ok", "Termux:API", "有回應，wake lock 可用");
+
+      if(plugged === false){
+        add("warn", "電源", `沒有接電${level != null ? `（電量 ${level}%）` : ""}`,
+          "放家裡掛機就一直插著。沒電關機的話，重開後要 Termux:Boot 才會自己起來");
+      } else if(plugged){
+        add("ok", "電源", `已接電${level != null ? `（電量 ${level}%）` : ""}`);
+      }
+
+      /* wake lock 沒有官方的查詢指令。能做的是直接把它拿起來 ——
+         這個動作是冪等的，本來就持有也不會有副作用。 */
+      const w = await runCmd("termux-wake-lock", [], 8000);
+      if(w.timedOut || w.missing || w.err){
+        add("warn", "wake lock", "抓不起來",
+          "手動跑一次 termux-wake-lock，看 Termux 的通知列有沒有出現鎖的標示");
+      } else {
+        add("ok", "wake lock", "已持有（螢幕關掉不影響機器人）");
+      }
+    }
+
+    /* Termux:Boot 也是 App + 目錄兩件事。目錄要那支 App 裝好才會被讀。 */
+    const bootScript = path.join(os.homedir(), ".termux", "boot", "gmgn-bot.sh");
+    if(fs.existsSync(bootScript)) add("ok", "開機自動啟動", "~/.termux/boot/gmgn-bot.sh 已就位");
+    else add("warn", "開機自動啟動", "沒有啟動腳本",
+      "跑 bash scripts/termux-setup.sh，並在 F-Droid 裝 Termux:Boot 後開一次");
+
+    add("info", "還要手動設定的兩項",
+      "這兩項系統不讓程式自己改，只能你去點",
+      "1) 設定 → 電池 → Termux → 選「不受限制 / 不最佳化」\n" +
+      "     2) 設定 → WiFi → 進階 → 螢幕關閉時保持 WiFi 連線（開）\n" +
+      "     做完這兩項之後，螢幕自動關掉是沒關係的 —— 螢幕跟 CPU 是兩回事。");
+
+    if(env.HEARTBEAT_HOURS === "0"){
+      add("warn", "心跳", "關閉中（HEARTBEAT_HOURS=0）",
+        "手機掛機時請打開（例如 12）。被凍結的程式不會跟你說它被凍結了，\n" +
+        "     定時心跳沒來才是你唯一會察覺的訊號。");
+    }
   }
 }
 
