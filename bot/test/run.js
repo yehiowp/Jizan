@@ -36,7 +36,9 @@ const { createCli: _createCli, GmgnCliError } = await import("../src/gmgncli.js"
    測試就變成「這台機器怎麼裝 gmgn-cli」的函數 —— 同一份程式碼在你的機器上綠、
    在別人的機器上紅，而兩邊的程式其實都沒問題。 */
 const FIXED_CLI = { cmd: "gmgn-cli", prefixArgs: [], via: "direct", needsShell: false };
-const createCli = (opts = {}) => _createCli({ resolved: FIXED_CLI, ...opts });
+/* 測試預設不節流（minGapMs: 0）。節流本身用假時鐘另外測 ——
+   讓每個測試真的睡 350ms，整套會慢到沒人想跑，而跑不動的測試等於沒有測試。 */
+const createCli = (opts = {}) => _createCli({ resolved: FIXED_CLI, minGapMs: 0, ...opts });
 const { createTrader } = await import("../src/trader.js");
 const { stats, realMoneyGate } = await import("../src/stats.js");
 const { checkBuy } = await import("../src/risk.js");
@@ -1845,6 +1847,88 @@ function freshStore(){
   assert("較晚的時間會延長", store.rateLimitBanUntil() === 9000);
   store.reload();
   assert("重新載入之後還在（這就是重啟的意思）", store.rateLimitBanUntil() === 9000);
+}
+
+/* ═══ 請求節流（自己會調的那個間隔）═══
+   漏桶擋的是瞬間爆量，但 GMGN 的違規次數是跨行程累積的 ——
+   文件寫明一次跑滿桶子不會馬上被封，累積起來才會。
+   所以真正需要的是「每兩個請求至少隔多久」，而且這個間隔要自己往上調。
+   全部用假時鐘測，測試不該真的去睡。 */
+{
+  let clock = 0;
+  const slept = [];
+  const fakeNow = () => clock;
+  const fakeSleep = ms => { slept.push(ms); clock += ms; return Promise.resolve(); };
+
+  const mk = (over = {}) => _createCli({
+    resolved: FIXED_CLI,
+    now: fakeNow,
+    sleep: fakeSleep,
+    execFileImpl: makeExecFile(),
+    ...over,
+  });
+
+  /* 第一個請求不用等，後面的要隔 minGapMs */
+  slept.length = 0;
+  const paced = mk({ minGapMs: 400 });
+  await paced.gasPrice({ chain: "sol" });
+  assert("第一個請求不用等", slept.filter(x => x > 0).length === 0, JSON.stringify(slept));
+  await paced.gasPrice({ chain: "sol" });
+  assert("第二個請求隔了 minGapMs", slept.includes(400), JSON.stringify(slept));
+
+  /* 撞到 429 之後間隔要加倍，而且維持住 */
+  const banned = mk({
+    minGapMs: 400,
+    execFileImpl: (bin, argv, opts, cb) =>
+      cb(new Error("x"), "", '{"code":429,"error":"RATE_LIMIT_BANNED","reset_at":' + Math.floor(clock / 1000 + 60) + '}'),
+  });
+  assert("一開始是設定的間隔", banned.gapMs() === 400, String(banned.gapMs()));
+  try { await banned.gasPrice({ chain: "sol" }); } catch { /* 預期會丟 */ }
+  assert("429 之後間隔加倍", banned.gapMs() === 800, String(banned.gapMs()));
+
+  /* 加倍有上限，不會無限長下去 */
+  const capped = _createCli({
+    resolved: FIXED_CLI, now: fakeNow, sleep: fakeSleep,
+    minGapMs: 4000, maxGapMs: 8000,
+    execFileImpl: (bin, argv, opts, cb) => cb(new Error("x"), "", "RATE_LIMIT_EXCEEDED"),
+  });
+  for(let i = 0; i < 5; i++){
+    try { await capped.gasPrice({ chain: "sol" }); } catch { /* 預期 */ }
+  }
+  assert("間隔有上限", capped.gapMs() === 8000, String(capped.gapMs()));
+
+  /* 軟限流：離開碼 0、stdout 空白。
+     當成「查無資料」是最危險的解讀 —— 閘門對未知欄位不扣分，
+     等於限流把一顆根本沒驗過的幣放行。 */
+  const soft = mk({
+    minGapMs: 400,
+    execFileImpl: (bin, argv, opts, cb) => cb(null, "", ""),
+  });
+  let softErr = null;
+  try { await soft.gasPrice({ chain: "sol" }); } catch(e){ softErr = e; }
+  assert("空回應要當成限流丟錯，不能當成查無資料", softErr !== null);
+  assert("軟限流有自己的錯誤碼", softErr?.code === "RATE_LIMIT_SOFT", String(softErr?.code));
+  assert("軟限流也會拉長間隔", soft.gapMs() === 800, String(soft.gapMs()));
+
+  /* 非空但不是 JSON 的輸出，仍然是「解析不了」，不是限流 —— 不要混為一談 */
+  const junk = mk({
+    minGapMs: 0,
+    execFileImpl: (bin, argv, opts, cb) => cb(null, "something went wrong", ""),
+  });
+  let junkErr = null;
+  try { await junk.gasPrice({ chain: "sol" }); } catch(e){ junkErr = e; }
+  assert("有輸出但不是 JSON 不算限流", junkErr && junkErr.code !== "RATE_LIMIT_SOFT", String(junkErr?.code));
+
+  /* CLI 自己的等待上限要被拉高，否則長一點的封禁會直接變成錯誤 */
+  let passedEnv = null;
+  const envCli = mk({
+    minGapMs: 0,
+    execFileImpl: (bin, argv, opts, cb) => { passedEnv = opts.env; cb(null, '{"code":0,"data":{}}', ""); },
+  });
+  await envCli.gasPrice({ chain: "sol" });
+  assert("有把 GMGN_RATE_LIMIT_AUTO_RETRY_MAX_WAIT_MS 傳給 CLI",
+    passedEnv?.GMGN_RATE_LIMIT_AUTO_RETRY_MAX_WAIT_MS === "90000",
+    String(passedEnv?.GMGN_RATE_LIMIT_AUTO_RETRY_MAX_WAIT_MS));
 }
 
 console.log("");

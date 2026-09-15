@@ -46,6 +46,7 @@ async function main(){
   /* 限流封禁跨行程記住：封的是 API Key，重啟不會解除。
      忘記它的話，重啟後第一個請求就會把封禁再延長 5 秒。 */
   const cli = createCli({
+    minGapMs: config.timing.minRequestGapMs,
     bucket: createBucket({
       initialBanUntil: store.rateLimitBanUntil(),
       onBan: until => store.setRateLimitBan(until),

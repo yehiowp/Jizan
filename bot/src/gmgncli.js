@@ -82,6 +82,8 @@ export function createBucket({ capacity = 20, refillPerSec = 20, now = () => Dat
    代幣名稱/符號來自鏈上，是攻擊者可以任意填的欄位，拼進 shell 就等於把主機送人。 */
 export function createCli({ bin = "gmgn-cli", execFileImpl = execFile, defaultTimeoutMs = 45000,
                             resolved = null, bucket = createBucket(),
+                            minGapMs = 350, maxGapMs = 8000,
+                            now = () => Date.now(),
                             sleep = ms => new Promise(r => setTimeout(r, ms)) } = {}){
   /* Windows 上 gmgn-cli 是 .cmd 包裝，直接 spawn 會拿到 spawn EINVAL。
      resolveCli 會找出它背後的 JS 進入點，改用 node 去跑，參數仍然保持陣列。 */
@@ -90,6 +92,36 @@ export function createCli({ bin = "gmgn-cli", execFileImpl = execFile, defaultTi
     log.warn("找不到 gmgn-cli 的 JS 進入點，退回 .cmd + shell", {
       note: "這條路徑上帶引號的 JSON 參數（--condition-orders）可能會壞"
     });
+  }
+
+  /* 漏桶擋的是「瞬間爆量」，但 GMGN 的違規次數是**跨行程累積**的 ——
+     文件講得很清楚：一次跑滿桶子不會馬上被封，累積起來才會。
+     所以除了漏桶，還要有一個「每兩個請求至少隔多久」的節流。
+
+     而且這個間隔會自己調：只要出現任何限流訊號就加倍（上限 8 秒），
+     而且**這一輪之後都維持加倍**，不會馬上調回來。
+     這樣它會自動收斂到你這把 Key 真正的額度，而不是我猜的數字。 */
+  let gapMs = Math.max(0, minGapMs);
+  let chain = Promise.resolve();     // 把所有呼叫排成一列，併發時間隔才真的成立
+  /* null = 還沒呼叫過。用 0 的話是靠「0 距離現在很久」這個巧合成立的，
+     換一個從 0 開始的時鐘就會在第一個請求上白等一次。 */
+  let lastAt = null;
+
+  function slowDown(why){
+    if(gapMs >= maxGapMs) return;
+    gapMs = Math.min(maxGapMs, Math.max(50, gapMs * 2));
+    log.warn("偵測到限流訊號，拉長請求間隔", { gapMs, why });
+  }
+
+  /* 排隊等到「距離上一次呼叫已經超過 gapMs」為止 */
+  function pace(){
+    const mine = chain.then(async () => {
+      const wait = lastAt === null ? 0 : lastAt + gapMs - now();
+      if(wait > 0) await sleep(wait);
+      lastAt = now();
+    });
+    chain = mine.catch(() => {});   // 一次失敗不能把後面整條隊伍卡死
+    return mine;
   }
 
   /* withStatus: true 時一律回 { exitOk, stdout, stderr, json }，把離開碼原封不動交出去。
@@ -107,6 +139,7 @@ export function createCli({ bin = "gmgn-cli", execFileImpl = execFile, defaultTi
     const wait = bucket.waitMs(weight);
     if(wait > 0) await sleep(wait);
     bucket.take(weight);
+    await pace();
     return execOnce(args, opts);
   }
 
@@ -116,8 +149,12 @@ export function createCli({ bin = "gmgn-cli", execFileImpl = execFile, defaultTi
       execFileImpl(target.cmd, argv, {
         timeout: timeoutMs,
         maxBuffer: 8 * 1024 * 1024,
-        /* 不繼承 shell，不帶 GMGN_ALLOW_AUTOMATED_TRADES 以外的東西 */
-        env: process.env,
+        /* gmgn-cli 自己就會在 429 時睡到伺服器給的 x-ratelimit-reset，
+           但預設最多只肯等 5 秒，所以一個 45 秒的封禁會直接變成錯誤丟出來。
+           把上限拉到 90 秒，讓它用「伺服器給的解封時刻」把封禁吸收掉 ——
+           那個時刻是權威的，比我們自己猜一個時間再重試安全得多
+           （猜錯而剛好踩在邊界上，正是每次延長 5 秒的來源）。 */
+        env: { ...process.env, GMGN_RATE_LIMIT_AUTO_RETRY_MAX_WAIT_MS: "90000" },
         shell: !!target.needsShell,
         /* stdin 關掉。gmgn-cli 的互動確認會從 tty 讀一個手打的 yes，
            繼承 stdin 的話那個等待會一路卡到逾時，外面看起來就是整支程式死掉。
@@ -145,6 +182,7 @@ export function createCli({ bin = "gmgn-cli", execFileImpl = execFile, defaultTi
           /* 記下封禁，之後所有請求在解封前直接被擋在本地 ——
              真正讓封禁一直延長的，是冷卻期間還在敲門。 */
           bucket.ban(resetAt ? resetAt * 1000 : Date.now() + 5 * 60000);
+          slowDown("429");
           return reject(new GmgnCliError("GMGN 限流", {
             code: "RATE_LIMIT",
             resetAt,
@@ -180,6 +218,16 @@ export function createCli({ bin = "gmgn-cli", execFileImpl = execFile, defaultTi
           return resolve({ exitOk: !err, exitCode: err?.code ?? 0, stdout: out, stderr: errOut, json: parsed });
         }
         if(parsed === undefined){
+          /* 離開碼 0 但什麼都沒印，是 GMGN 的「軟限流」，不是「查無資料」。
+             當成查無資料的話，一顆幣會變成「沒有風險欄位」——
+             而閘門對未知欄位是不扣分的，等於限流把一顆沒驗過的幣放行。 */
+          if(!err && out.trim() === ""){
+            slowDown("空回應（軟限流）");
+            return reject(new GmgnCliError("gmgn-cli 回傳空白（GMGN 軟限流）", {
+              code: "RATE_LIMIT_SOFT",
+              hint: "這不是查無資料，是被限流了。已自動拉長請求間隔，下一輪會慢一點。",
+            }));
+          }
           if(allowNonZero) return resolve({ ok: !err, stdout: out, stderr: errOut });
           return reject(new GmgnCliError("gmgn-cli 沒有回傳可解析的 JSON", { stderr: errOut || out }));
         }
@@ -197,6 +245,7 @@ export function createCli({ bin = "gmgn-cli", execFileImpl = execFile, defaultTi
   return {
     run,
     bucket,
+    gapMs(){ return gapMs; },
 
     /* 官方文件：exit 0 = 已設定可以往下走，exit 1 = 要先設 API Key。
        離開碼就是答案，所以一定要用 withStatus 把它取出來 ——

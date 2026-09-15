@@ -134,7 +134,12 @@ export const config = {
     monitorIntervalSec: Math.max(20, numEnv("MONITOR_INTERVAL_SEC", 60)),
     /* 心跳：無人看管時，「沒收到訊息」不該等於「沒事發生」，
        也可能是它早就掛了而你不知道。0 = 關閉。 */
-    heartbeatHours: numEnv("HEARTBEAT_HOURS", 12)
+    heartbeatHours: numEnv("HEARTBEAT_HOURS", 12),
+    /* 送給 GMGN 的請求之間最少隔多久。GMGN 的違規次數是跨行程累積的，
+       所以「不要瞬間爆量」不夠 —— 一直貼著上限跑，累積起來還是會被封。
+       程式偵測到限流訊號會自己把這個值加倍，但那只在那個行程裡有效；
+       寫在 .env 的才是重啟後還在的。 */
+    minRequestGapMs: Math.max(0, numEnv("MIN_REQUEST_GAP_MS", 350))
   }
 };
 
