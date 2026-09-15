@@ -16,6 +16,7 @@
 */
 
 import { execFile } from "node:child_process";
+import { resolveCli } from "./resolve-cli.js";
 
 /* [路徑, 嚴重性, 這個欄位壞掉會怎樣] */
 const SPECS = {
@@ -176,9 +177,27 @@ if(isMain){
 
   if(kind === "all"){
     const chain = process.env.CHAIN || "sol";
-    const addr = process.argv[3];
-    const run = args => new Promise(res => execFile("gmgn-cli", args, { timeout: 45000, maxBuffer: 8e6 },
+    /* Windows 上 gmgn-cli 是 .cmd 包裝，直接 spawn 會 EINVAL */
+    const CLI = resolveCli("gmgn-cli");
+    const run = args => new Promise(res => execFile(CLI.cmd, [...CLI.prefixArgs, ...args],
+      { timeout: 45000, maxBuffer: 8e6, shell: !!CLI.needsShell, stdio: ["ignore", "pipe", "pipe"] },
       (e, out) => res(e ? null : out)));
+
+    /* 沒給地址就自己去熱榜抓一顆 —— 少一個手動複製貼上的步驟，
+       也確保驗到的是一顆真的在交易的幣。 */
+    let addr = process.argv[3];
+    if(!addr){
+      const out = await run(["market", "trending", "--chain", chain, "--limit", "1", "--raw"]);
+      try {
+        const d = JSON.parse(out ?? "null");
+        const data = d?.data ?? d;
+        const list = Array.isArray(data) ? data
+          : ["rank", "list", "tokens", "coins"].map(k => data?.[k]).find(Array.isArray)
+            ?? Object.values(data ?? {}).filter(Array.isArray).flat();
+        addr = list?.[0]?.address;
+        if(addr) console.log(`（沒給地址，自動用熱榜第一名：${list[0].symbol ?? "?"} ${addr}）`);
+      } catch {}
+    }
 
     const jobs = [
       ["gas", ["gas-price", "--chain", chain, "--raw"]],
@@ -199,7 +218,7 @@ if(isMain){
         if(r.criticalMissing) worst = 1;
       } catch(e){ console.log(`\n── ${SPECS[k].label} ──\n❌ 解析失敗：${e.message}`); worst = 1; }
     }
-    if(!addr) console.log("\nℹ️  沒給代幣地址，跳過 token info / security。用法：npm run verify -- <代幣地址>");
+    if(!addr) console.log("\nℹ️  抓不到代幣地址，跳過 token info / security。可以手動給：npm run verify -- <代幣地址>");
     process.exit(worst);
   }
 
