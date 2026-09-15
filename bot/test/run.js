@@ -552,7 +552,8 @@ function freshStore(){
   const autoCfg = JSON.parse(JSON.stringify(config));
   autoCfg.mode.autoBuy = true;
   autoCfg.auto = { minScore: 72, maxWarnings: 2, allowDowngrade: false,
-                   maxTradesPerDay: 2, maxSpendPerDayUsd: 40, armHours: 12 };
+                   maxTradesPerDay: 2, maxSpendPerDayUsd: 40, armHours: 12,
+                   vetBatchSize: 8, vetConcurrency: 4 };
 
   function autoSetup(overrides = {}){
     const store = freshStore();
@@ -797,6 +798,106 @@ function freshStore(){
   assert("因子上限總和是 100",
     withSmart.factors.reduce((s, f) => s + f.max, 0) === 100,
     String(withSmart.factors.reduce((s, f) => s + f.max, 0)));
+}
+
+/* ═══════════════════════════ 14. 併發與兩階段驗證 ═══════════════════════════ */
+{
+  const { mapLimit } = await import("../src/autotrader.js");
+
+  const order = [];
+  const out = await mapLimit([1, 2, 3, 4, 5], 2, async n => { order.push(n); return n * 2; });
+  assert("mapLimit 結果完整且順序對應", JSON.stringify(out) === "[2,4,6,8,10]", JSON.stringify(out));
+  assert("mapLimit 每一項都跑到", order.length === 5, JSON.stringify(order));
+
+  /* 這是上面真的抓到的 bug：併發數壞掉時會靜默回傳全是空洞的陣列 */
+  for(const badLimit of [undefined, NaN, 0, -3, "x"]){
+    const r = await mapLimit([1, 2, 3], badLimit, async n => n);
+    assert(`併發數為 ${String(badLimit)} 時仍跑完全部而不是靜默跳過`,
+      r.length === 3 && r.every(x => x !== undefined), JSON.stringify(r));
+  }
+  assert("空陣列回空陣列", JSON.stringify(await mapLimit([], 4, async n => n)) === "[]");
+
+  /* 任何一個丟出例外要整批中止（限流時必須停手） */
+  let threw = false;
+  try {
+    await mapLimit([1, 2, 3], 2, async n => { if(n === 2){ const e = new Error("rl"); e.code = "RATE_LIMIT"; throw e; } return n; });
+  } catch(e){ threw = e.code === "RATE_LIMIT"; }
+  assert("批次中有人限流就整批丟出", threw);
+
+  /* vet 不報價，prepareBuy 才報價 */
+  {
+    calls.length = 0;
+    const store = freshStore();
+    const cli = createCli({ execFileImpl: makeExecFile() });
+    const trader = createTrader({ cli, store });
+
+    const v = await trader.vet({ address: "Tok1111111111111111111111111111111111111111" });
+    assert("vet 會判定通過", v.pass === true, JSON.stringify(v.reasons));
+    assert("vet 不打報價", !calls.some(c => c.argv.join(" ").startsWith("order quote")),
+      JSON.stringify(calls.map(c => c.argv.slice(0, 2).join(" "))));
+
+    calls.length = 0;
+    const plan = await trader.prepareBuy({ address: "Tok1111111111111111111111111111111111111111", vetted: v });
+    assert("帶著 vet 結果就不重打 info/security",
+      !calls.some(c => c.argv.join(" ").startsWith("token info")),
+      JSON.stringify(calls.map(c => c.argv.slice(0, 2).join(" "))));
+    assert("prepareBuy 才打報價", calls.some(c => c.argv.join(" ").startsWith("order quote")));
+    assert("沿用 vet 的結果仍可執行", plan.canExecute === true);
+  }
+
+  /* 掃描合併兩個來源並去重 */
+  {
+    const store = freshStore();
+    const dup = { ...healthyRow(), address: "SAME" };
+    const cli = createCli({ execFileImpl: (bin, argv, opts, cb) => {
+      const join = argv.join(" ");
+      if(join.startsWith("market trending")) return cb(null, JSON.stringify({ code: 0, data: [dup, healthyRow({ address: "ONLY_TREND" })] }), "");
+      if(join.startsWith("market hot-searches")) return cb(null, JSON.stringify({ code: 0, data: [dup, healthyRow({ address: "ONLY_HOT" })] }), "");
+      return cb(null, JSON.stringify({ code: 0, data: {} }), "");
+    }});
+    const trader = createTrader({ cli, store });
+    const { all } = await trader.scan();
+    assert("兩個來源合併後去重", all.length === 3, JSON.stringify(all.map(c => c.address)));
+    assert("熱搜獨有的幣有被納入", all.some(c => c.address === "ONLY_HOT"));
+
+    /* 其中一個來源掛掉不影響另一個 */
+    const halfCli = createCli({ execFileImpl: (bin, argv, opts, cb) => {
+      const join = argv.join(" ");
+      if(join.startsWith("market hot-searches")) return cb(new Error("boom"), "", "boom");
+      if(join.startsWith("market trending")) return cb(null, JSON.stringify({ code: 0, data: [healthyRow()] }), "");
+      return cb(null, JSON.stringify({ code: 0, data: {} }), "");
+    }});
+    const halfTrader = createTrader({ cli: halfCli, store: freshStore() });
+    const half = await halfTrader.scan();
+    assert("熱搜掛掉仍拿得到 trending 的結果", half.all.length === 1, String(half.all.length));
+  }
+
+  /* 驗過沒過的幣進冷卻，不再重複驗 */
+  {
+    const store = freshStore();
+    store.markRejected("Tok1111111111111111111111111111111111111111");
+    assert("剛拒絕的幣在冷卻中", store.wasRejected("Tok1111111111111111111111111111111111111111") === true);
+    assert("沒拒絕過的不在冷卻", store.wasRejected("Other") === false);
+    assert("冷卻窗外就可以重驗",
+      store.wasRejected("Tok1111111111111111111111111111111111111111", 0) === false);
+
+    const cli = createCli({ execFileImpl: makeExecFile() });
+    const trader = createTrader({ cli, store });
+    const { candidates } = await trader.scan();
+    assert("冷卻中的幣不會進候選", !candidates.some(c => c.address.startsWith("Tok1")),
+      JSON.stringify(candidates.map(c => c.address)));
+  }
+
+  /* gas-price 在 TTL 內只打一次 */
+  {
+    calls.length = 0;
+    const store = freshStore();
+    const trader = createTrader({ cli: createCli({ execFileImpl: makeExecFile() }), store });
+    await trader.prepareBuy({ address: "Tok1111111111111111111111111111111111111111" });
+    await trader.prepareBuy({ address: "Tok1111111111111111111111111111111111111111" });
+    const gasCalls = calls.filter(c => c.argv[0] === "gas-price").length;
+    assert("gas-price 在快取期內只打一次", gasCalls === 1, String(gasCalls));
+  }
 }
 
 console.log("");

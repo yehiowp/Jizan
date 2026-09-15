@@ -14,6 +14,29 @@ import { log } from "./log.js";
 
    3. 每一筆都會即時回報它買了什麼、為什麼買。你睡醒要能看懂它做了什麼。 */
 
+/* 固定併發數跑完一批。任何一個丟出例外就整批中止（限流時要停手，不是繼續敲）。
+
+   併發數一律先轉成有效正整數：拿到 undefined / NaN 時，
+   Math.min 會算出 NaN、Array.from({length:NaN}) 會建出 0 個 worker，
+   結果是回傳一個全是空洞的陣列 —— 不報錯，但一顆都沒驗。
+   會安靜跳過工作的失敗方式，比直接爆掉危險得多。 */
+export async function mapLimit(items, limit, fn){
+  if(!Array.isArray(items) || items.length === 0) return [];
+  const n = Number(limit);
+  const workerCount = Math.max(1, Math.min(Number.isFinite(n) && n >= 1 ? Math.floor(n) : 1, items.length));
+  const out = new Array(items.length);
+  let next = 0;
+  const workers = Array.from({ length: workerCount }, async () => {
+    while(true){
+      const i = next++;
+      if(i >= items.length) return;
+      out[i] = await fn(items[i], i);
+    }
+  });
+  await Promise.all(workers);
+  return out;
+}
+
 export function createAutoTrader({ store, trader, say, cfg = config }){
   let timer = null;
   let running = false;
@@ -99,17 +122,53 @@ export function createAutoTrader({ store, trader, say, cfg = config }){
         return { skipped: `${all.length} 顆裡沒有達到自動門檻 ${cfg.auto.minScore} 的` };
       }
 
-      /* 5. 逐一嘗試，第一顆全部條件都過的就買，一輪最多買一筆 */
-      for(const coin of pool.slice(0, 5)){
+      /* 5. 平行驗證前幾顆。
+         逐顆驗的話，前面四顆被刷掉就是四個連續往返才輪到第五顆。
+         平行跑一批，一輪能看更多顆而且更快。併發數壓在限流桶容量之下：
+         每顆 2 個請求（info + security），權重各 1，桶子是 20。 */
+      const batch = pool.slice(0, cfg.auto.vetBatchSize ?? 8);
+      const vetted = await mapLimit(batch, cfg.auto.vetConcurrency ?? 4, async coin => {
+        try {
+          const v = await trader.vet({ address: coin.address, coin, usdAmount: cfg.risk.positionUsd });
+          return { coin, v };
+        } catch(e){
+          if(e.code === "RATE_LIMIT") throw e;          // 限流要讓整輪停手，不是吞掉
+          log.warn("自動交易驗證失敗", { symbol: coin.symbol, error: e.message });
+          return { coin, v: null, error: e.message };
+        }
+      }).catch(e => {
+        if(e.code === "RATE_LIMIT"){
+          log.warn("自動交易遇到限流，這輪停手", { hint: e.hint });
+          return null;
+        }
+        throw e;
+      });
+      if(vetted === null) return { skipped: "限流" };
+
+      /* 沒過閘的記下來，十五分鐘內不重驗 —— 省往返也省限流額度 */
+      const passed = [];
+      for(const { coin, v } of vetted){
+        if(!v) continue;
+        if(!v.pass){
+          store.markRejected(coin.address);
+          log.info("自動交易跳過", { symbol: coin.symbol, reasons: v.reasons.slice(0, 2) });
+          continue;
+        }
+        passed.push({ coin, v });
+      }
+      if(!passed.length) return { skipped: `驗了 ${batch.length} 顆都沒過閘` };
+
+      /* 分數最高的優先 */
+      passed.sort((a, b) => b.coin.score - a.coin.score);
+
+      for(const { coin, v } of passed){
+        /* 到這裡才報價 —— 只有真要買的那顆需要付這個往返 */
         let plan;
         try {
-          plan = await trader.prepareBuy({ address: coin.address, coin, usdAmount: cfg.risk.positionUsd });
+          plan = await trader.prepareBuy({ address: coin.address, coin, vetted: v, usdAmount: cfg.risk.positionUsd });
         } catch(e){
-          if(e.code === "RATE_LIMIT"){
-            log.warn("自動交易遇到限流，這輪停手", { hint: e.hint });
-            return { skipped: "限流" };
-          }
-          log.warn("自動交易準備失敗", { symbol: coin.symbol, error: e.message });
+          if(e.code === "RATE_LIMIT") return { skipped: "限流" };
+          log.warn("自動交易報價失敗", { symbol: coin.symbol, error: e.message });
           continue;
         }
 
@@ -117,6 +176,7 @@ export function createAutoTrader({ store, trader, say, cfg = config }){
         const extra = autoGate(plan);
 
         if(!plan.canExecute || extra.length){
+          store.markRejected(coin.address);
           log.info("自動交易跳過", {
             symbol: coin.symbol,
             reasons: [...plan.gate.blocks, ...plan.riskCheck.reasons, ...extra].slice(0, 3)
@@ -160,7 +220,7 @@ export function createAutoTrader({ store, trader, say, cfg = config }){
         return { attempted: coin.symbol, ok: true, position: p };
       }
 
-      return { skipped: `${pool.length} 顆候選都沒通過自動模式的額外條件` };
+      return { skipped: `${passed.length} 顆過閘的都沒通過自動模式的額外條件` };
     } finally {
       running = false;
     }

@@ -36,17 +36,30 @@ export function createTrader({ cli, store, cfg = config }){
   }
 
   return {
-    /* ── 掃描：GMGN trending → 評分 → 過濾 ── */
-    async scan({ limit = 100 } = {}){
-      const rows = await cli.trending({
-        chain,
-        interval: cfg.filter.interval,
-        limit,
-        /* 伺服器端先濾掉一部分，省請求也省得自己判 */
-        minLiquidity: cfg.filter.minDepthUsd * 2,   // trending 的 liquidity 是兩側之和
-        minSwaps: 10,
-        filters: chain === "sol" ? ["renounced", "not_wash_trading"] : ["not_honeypot"]
-      });
+    /* ── 掃描：trending + 熱搜兩個來源 → 評分 → 過濾。
+       兩個來源平行抓，其中一個掛掉不影響另一個。 ── */
+    async scan({ limit = 100, includeHotSearch = true } = {}){
+      const [trendRows, hotRows] = await Promise.all([
+        cli.trending({
+          chain,
+          interval: cfg.filter.interval,
+          limit,
+          /* 伺服器端先濾掉一部分，省請求也省得自己判 */
+          minLiquidity: cfg.filter.minDepthUsd * 2,   // trending 的 liquidity 是兩側之和
+          minSwaps: 10,
+          filters: chain === "sol" ? ["renounced", "not_wash_trading"] : ["not_honeypot"]
+        }).catch(e => { if(e.code === "RATE_LIMIT") throw e; return []; }),
+        includeHotSearch
+          ? cli.hotSearches({ chain, interval: cfg.filter.interval, limit,
+                              minLiquidity: cfg.filter.minDepthUsd * 2 })
+              .catch(e => { if(e.code === "RATE_LIMIT") throw e; return []; })
+          : Promise.resolve([])
+      ]);
+
+      /* 同一顆幣可能同時上兩個榜，用地址去重 */
+      const rows = [...new Map([...trendRows, ...hotRows]
+        .filter(r => r?.address)
+        .map(r => [r.address, r])).values()];
 
       const coins = rows
         .map(r => evaluate(r, { minDepthUsd: cfg.filter.minDepthUsd, chain }))
@@ -58,13 +71,16 @@ export function createTrader({ cli, store, cfg = config }){
         candidates: coins.filter(c =>
           c.flags.length === 0 &&
           c.score >= cfg.filter.minScore &&
-          !store.wasSeen(c.address, cooldownMs)
+          !store.wasSeen(c.address, cooldownMs) &&
+          !store.wasRejected(c.address)
         )
       };
     },
 
-    /* ── 買入前的完整檢查。不動錢，可以隨便跑。 ── */
-    async prepareBuy({ address, usdAmount = cfg.risk.positionUsd, coin = null }){
+    /* ── 只驗證、不報價。
+       報價（order quote）權重是 2，而且只有真的要買的那一顆才需要，
+       放在驗證階段等於每個被刷掉的候選都白付一次往返。 ── */
+    async vet({ address, usdAmount = cfg.risk.positionUsd, coin = null }){
       const [info, security] = await Promise.all([
         cli.tokenInfo({ chain, address }),
         cli.tokenSecurity({ chain, address })
@@ -75,9 +91,22 @@ export function createTrader({ cli, store, cfg = config }){
         minDepthUsd: cfg.filter.minDepthUsd,
         positionUsd: usdAmount
       });
-
       /* 風控閘門（部位上限、單日虧損、停機線）跟幣本身無關，一樣要過 */
       const riskCheck = checkBuy({ store, coin, usdAmount, cfg });
+
+      return {
+        address, coin, info, security, gate, riskCheck,
+        symbol: sanitize(info?.symbol ?? coin?.symbol ?? "?"),
+        pass: gate.pass && riskCheck.ok,
+        reasons: [...gate.blocks, ...riskCheck.reasons]
+      };
+    },
+
+    /* ── 買入前的完整檢查（含報價）。不動錢。
+       已經 vet 過的話把結果傳進來，就不會重打 info/security。 ── */
+    async prepareBuy({ address, usdAmount = cfg.risk.positionUsd, coin = null, vetted = null }){
+      const v = vetted ?? await this.vet({ address, usdAmount, coin });
+      const { info, gate, riskCheck } = v;
 
       const gas = await gasContext();
       const amountRaw = Math.round(usdAmount / gas.nativeUsd * LAMPORTS);

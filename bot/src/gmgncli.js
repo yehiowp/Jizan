@@ -112,6 +112,20 @@ export function createCli({ bin = "gmgn-cli", execFileImpl = execFile, defaultTi
       return Array.isArray(data) ? data : (data?.rank ?? data?.list ?? data?.tokens ?? []);
     },
 
+    async hotSearches({ chain, interval = "1h", limit = 100, minLiquidity }){
+      const args = ["market", "hot-searches", "--chain", chain, "--interval", interval, "--limit", limit];
+      if(minLiquidity != null) args.push("--min-liquidity", minLiquidity);
+      args.push("--raw");
+      const data = unwrap(await run(args));
+      if(Array.isArray(data)) return data;
+      for(const key of ["rank", "list", "tokens", "coins"]){
+        if(Array.isArray(data?.[key])) return data[key];
+      }
+      /* 可以一次查多條鏈，回傳會依鏈分組 */
+      const groups = Object.values(data ?? {}).filter(Array.isArray);
+      return groups.length ? groups.flat() : [];
+    },
+
     async search({ query, chain }){
       const args = ["market", "search", "-q", query];
       if(chain) args.push("--chain", chain);           // 想搜全鏈就不要給 --chain

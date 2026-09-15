@@ -81,6 +81,14 @@ export function createStore(filePath){
     },
 
     markSeen(addr){ state.seen[addr] = Date.now(); save(); },
+
+    /* 驗過但沒過閘的幣，短時間內不要重驗 —— 省往返也省限流額度。
+       冷卻比通知冷卻短很多，因為盤況真的會在十幾分鐘內改變。 */
+    markRejected(addr){ state.seen[`rej:${addr}`] = Date.now(); save(); },
+    wasRejected(addr, withinMs = 15 * 60 * 1000){
+      const t = state.seen[`rej:${addr}`];
+      return t != null && Date.now() - t < withinMs;
+    },
     wasSeen(addr, withinMs = 6 * 3600 * 1000){
       const t = state.seen[addr];
       return t != null && Date.now() - t < withinMs;

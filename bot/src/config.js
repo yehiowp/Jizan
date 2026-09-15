@@ -48,7 +48,11 @@ export const config = {
     allowDowngrade: bool("AUTO_ALLOW_DOWNGRADE", false),
     maxTradesPerDay: Math.round(numEnv("AUTO_MAX_TRADES_PER_DAY", 4)),
     maxSpendPerDayUsd: numEnv("AUTO_MAX_SPEND_PER_DAY_USD", 60),
-    armHours: numEnv("AUTO_ARM_HOURS", 12)
+    armHours: numEnv("AUTO_ARM_HOURS", 12),
+    /* 一輪驗幾顆、同時驗幾顆。併發數要壓在限流漏桶容量（20）之下：
+       每顆 2 個請求，併發 4 就是一次 8 個，還有餘裕給監控和報價。 */
+    vetBatchSize: Math.round(numEnv("AUTO_VET_BATCH", 8)),
+    vetConcurrency: Math.round(numEnv("AUTO_VET_CONCURRENCY", 4))
   },
   risk: {
     bankrollUsd: numEnv("BANKROLL_USD", 100),
@@ -114,6 +118,10 @@ export function validateConfig(cfg = config){
     }
     if(a.maxTradesPerDay < 1) errors.push("AUTO_MAX_TRADES_PER_DAY 至少要 1");
     if(a.armHours <= 0 || a.armHours > 72) errors.push("AUTO_ARM_HOURS 必須介於 0 到 72 小時之間");
+    if(a.vetConcurrency < 1 || a.vetConcurrency > 8){
+      errors.push("AUTO_VET_CONCURRENCY 必須介於 1 到 8：再高會撞 GMGN 的限流漏桶");
+    }
+    if(a.vetBatchSize < 1) errors.push("AUTO_VET_BATCH 至少要 1");
     if(a.maxSpendPerDayUsd > cfg.risk.maxDeployedUsd){
       warnings.push(`AUTO_MAX_SPEND_PER_DAY_USD ($${a.maxSpendPerDayUsd}) 超過在場資金上限 ($${cfg.risk.maxDeployedUsd})，實際會被後者卡住`);
     }
