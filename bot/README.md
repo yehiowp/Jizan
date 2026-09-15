@@ -20,12 +20,16 @@
 |---|---|
 | Node.js 20+ | |
 | `gmgn-cli` | `npm install -g gmgn-cli` |
-| GMGN API Key | `gmgn-cli config` 會告訴你去哪申請，拿到後 `gmgn-cli config --apply <KEY>` |
-| 錢包私鑰 | 由 `gmgn-cli config` 一起設定。**用小額燒錢包，不要用主錢包。** |
+| GMGN API Key | `gmgn-cli config` 給你申請連結，拿到後 `gmgn-cli config --apply <KEY>` |
+| 交易錢包 | **`gmgn-cli config` 會幫你產生一個全新錢包**，不是綁你現有的。你要自己匯錢進去。 |
 | Telegram Bot Token | 跟 [@BotFather](https://t.me/BotFather) 說 `/newbot` |
 | 你的 Telegram ID | 跟 [@userinfobot](https://t.me/userinfobot) 說句話 |
 
 ⚠️ `gmgn-cli` **只走 IPv4**。主機開著 IPv6 會拿到 401/403，而且錯誤訊息看不出真正原因。
+
+⚠️ **那個新錢包的私鑰只存在 `~/.config/gmgn/.env` 這一個地方。** 機器沒了、檔案刪了，錢包裡的錢就拿不回來。只放你打算拿來交易的金額，賺到的錢定期轉回你自己的主錢包。
+
+⚠️ **`gmgn-cli config` 每跑一次就產生一組新金鑰。** 拿到連結後不要再跑一次 `config`，否則你申請到的 API Key 會對應到已經被覆蓋掉的舊金鑰。
 
 ## 安裝
 
