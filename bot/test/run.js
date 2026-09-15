@@ -1174,6 +1174,77 @@ function freshStore(){
   assert("不認得的種類會報錯", threw);
 }
 
+/* ═══════════════════════════ 20. Windows 的 .cmd 包裝 ═══════════════════════════ */
+{
+  const { resolveCli } = await import("../src/resolve-cli.js");
+
+  /* 非 Windows：直接執行，不繞路 */
+  const nix = resolveCli("gmgn-cli", { win: false });
+  assert("非 Windows 直接執行", nix.cmd === "gmgn-cli" && nix.prefixArgs.length === 0 && !nix.needsShell,
+    JSON.stringify(nix));
+
+  /* Windows：找得到 JS 進入點時，改用 node 去跑它 ——
+     這是 spawn EINVAL 的正解，不是開 shell */
+  const fakeRoot = fs.mkdtempSync(path.join(os.tmpdir(), "memebot-win-"));
+  const pkgDir = path.join(fakeRoot, "gmgn-cli");
+  fs.mkdirSync(pkgDir, { recursive: true });
+  fs.writeFileSync(path.join(pkgDir, "cli.js"), "// entry");
+  fs.writeFileSync(path.join(pkgDir, "package.json"),
+    JSON.stringify({ name: "gmgn-cli", bin: { "gmgn-cli": "cli.js" } }));
+
+  const win = resolveCli("gmgn-cli", { win: true, roots: [fakeRoot] });
+  assert("Windows 改用 node 執行", win.cmd === process.execPath, win.cmd);
+  assert("Windows 把 JS 進入點放在參數最前面",
+    win.prefixArgs.length === 1 && win.prefixArgs[0].endsWith("cli.js"), JSON.stringify(win.prefixArgs));
+  assert("Windows 正解不需要 shell", !win.needsShell && win.via === "node-entry", win.via);
+
+  /* bin 是字串形式的 package.json 也要支援 */
+  const pkgDir2 = path.join(fakeRoot, "other-cli");
+  fs.mkdirSync(pkgDir2, { recursive: true });
+  fs.writeFileSync(path.join(pkgDir2, "main.js"), "// entry");
+  fs.writeFileSync(path.join(pkgDir2, "package.json"),
+    JSON.stringify({ name: "other-cli", bin: "main.js" }));
+  const win2 = resolveCli("other-cli", { win: true, roots: [fakeRoot] });
+  assert("bin 是字串也解析得出來", win2.prefixArgs[0]?.endsWith("main.js"), JSON.stringify(win2));
+
+  /* 找不到時才退回 .cmd + shell，而且要標示出來讓呼叫端知道 */
+  const fallback = resolveCli("gmgn-cli", { win: true, roots: [path.join(fakeRoot, "nope")] });
+  assert("找不到才退回 .cmd", fallback.cmd === "gmgn-cli.cmd" && fallback.needsShell === true,
+    JSON.stringify(fallback));
+  assert("退回路徑有標記", fallback.via === "cmd-shell");
+
+  /* 實際傳給 execFile 的參數：node 進入點要在最前面，原本的參數順序不變 */
+  {
+    let seen = null;
+    const cli = createCli({
+      resolved: { cmd: "NODE", prefixArgs: ["/x/cli.js"], via: "node-entry" },
+      execFileImpl: (cmd, argv, o, cb) => { seen = { cmd, argv, shell: o.shell };
+        cb(null, JSON.stringify({ code: 0, data: {} }), ""); }
+    });
+    await cli.gasPrice({ chain: "sol" });
+    assert("Windows 路徑下執行的是 node", seen.cmd === "NODE", seen.cmd);
+    assert("進入點在參數最前面，原參數順序不變",
+      seen.argv[0] === "/x/cli.js" && seen.argv[1] === "gas-price" && seen.argv.at(-1) === "--raw",
+      JSON.stringify(seen.argv));
+    assert("node-entry 路徑不開 shell", seen.shell === false, String(seen.shell));
+  }
+
+  /* 帶引號的 JSON 參數必須原封不動 —— 這正是不能用 shell:true 的理由 */
+  {
+    let seen = null;
+    const cli = createCli({
+      resolved: { cmd: "NODE", prefixArgs: ["/x/cli.js"], via: "node-entry" },
+      execFileImpl: (cmd, argv, o, cb) => { seen = argv; cb(null, JSON.stringify({ code: 0, data: { order_id: "1" } }), ""); }
+    });
+    const orders = [{ order_type: "loss_stop", side: "sell", price_scale: "35", sell_ratio: "100" }];
+    await cli.swap({ chain: "sol", from: "W", inputToken: "A", outputToken: "B",
+                     amountRaw: 1, slippage: 15, conditionOrders: orders });
+    const json = seen[seen.indexOf("--condition-orders") + 1];
+    assert("condition-orders 的 JSON 完整保留",
+      JSON.parse(json)[0].order_type === "loss_stop", json);
+  }
+}
+
 console.log("");
 if(failures){
   console.log(`${failures} 項測試失敗`);

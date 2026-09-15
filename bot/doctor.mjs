@@ -11,15 +11,21 @@ import os from "node:os";
 import path from "node:path";
 import { execFile } from "node:child_process";
 import { fileURLToPath } from "node:url";
+import { resolveCli } from "./src/resolve-cli.js";
 
 const WIN = process.platform === "win32";
 const rows = [];
 const add = (status, name, detail, fix) => rows.push({ status, name, detail, fix });
 
-function run(cmd, args, timeout = 20000){
+/* Windows 上 gmgn-cli 是 .cmd 包裝，直接 spawn 會拿到 spawn EINVAL。
+   resolveCli 會改用 node 去跑它背後的 JS。 */
+const CLI = resolveCli("gmgn-cli");
+
+function runCli(args, timeout = 20000){
   return new Promise(res => {
-    execFile(cmd, args, { timeout, windowsHide: true, stdio: ["ignore", "pipe", "pipe"] },
-      (err, stdout, stderr) => res({ err, out: String(stdout ?? ""), errOut: String(stderr ?? "") }));
+    execFile(CLI.cmd, [...CLI.prefixArgs, ...args], {
+      timeout, windowsHide: true, stdio: ["ignore", "pipe", "pipe"], shell: !!CLI.needsShell
+    }, (err, stdout, stderr) => res({ err, out: String(stdout ?? ""), errOut: String(stderr ?? "") }));
   });
 }
 
@@ -44,13 +50,13 @@ add("info", "作業系統", `${process.platform} ${os.arch()}`,
 
 /* ── 3. gmgn-cli ── */
 {
-  const r = await run(WIN ? "gmgn-cli.cmd" : "gmgn-cli", ["--version"]);
+  const r = await runCli(["--version"]);
   if(r.err && /ENOENT/.test(String(r.err))){
     add("fail", "gmgn-cli", "找不到這個指令", "npm install -g gmgn-cli");
   } else if(r.err){
     add("warn", "gmgn-cli", `執行有問題：${(r.errOut || r.out).trim().slice(0, 80)}`, "試試 npm install -g gmgn-cli 重裝");
   } else {
-    add("ok", "gmgn-cli", `v${r.out.trim()}`);
+    add("ok", "gmgn-cli", `v${r.out.trim()}${CLI.via === "node-entry" ? "（Windows：用 node 直接跑，繞過 .cmd）" : ""}`);
   }
 }
 
@@ -155,8 +161,7 @@ if(env.TELEGRAM_TOKEN){
 
 /* ── 9. 錢包裡有沒有錢 ── */
 {
-  const bin = WIN ? "gmgn-cli.cmd" : "gmgn-cli";
-  const r = await run(bin, ["portfolio", "info", "--raw"], 30000);
+  const r = await runCli(["portfolio", "info", "--raw"], 30000);
   if(r.err){
     const msg = (r.errOut || r.out).trim().slice(0, 120);
     if(/API_KEY/i.test(msg)) add("skip", "錢包餘額", "API Key 還沒設定，跳過");

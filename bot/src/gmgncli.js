@@ -1,5 +1,6 @@
 import { execFile } from "node:child_process";
 import { log } from "./log.js";
+import { resolveCli } from "./resolve-cli.js";
 
 export class GmgnCliError extends Error {
   constructor(message, { code = "", hint = "", stderr = "", resetAt = null } = {}){
@@ -15,18 +16,27 @@ export class GmgnCliError extends Error {
 /* gmgn-cli 封裝。
    全部用 execFile + 參數陣列，絕不拼 shell 字串 ——
    代幣名稱/符號來自鏈上，是攻擊者可以任意填的欄位，拼進 shell 就等於把主機送人。 */
-export function createCli({ bin = "gmgn-cli", execFileImpl = execFile, defaultTimeoutMs = 45000 } = {}){
+export function createCli({ bin = "gmgn-cli", execFileImpl = execFile, defaultTimeoutMs = 45000, resolved = null } = {}){
+  /* Windows 上 gmgn-cli 是 .cmd 包裝，直接 spawn 會拿到 spawn EINVAL。
+     resolveCli 會找出它背後的 JS 進入點，改用 node 去跑，參數仍然保持陣列。 */
+  const target = resolved ?? resolveCli(bin);
+  if(target.via === "cmd-shell"){
+    log.warn("找不到 gmgn-cli 的 JS 進入點，退回 .cmd + shell", {
+      note: "這條路徑上帶引號的 JSON 參數（--condition-orders）可能會壞"
+    });
+  }
 
   /* withStatus: true 時一律回 { exitOk, stdout, stderr, json }，把離開碼原封不動交出去。
      這是給「離開碼本身就是答案」的指令用的（例如 config --check：0 = 已設定，1 = 沒設定）。 */
   function run(args, { timeoutMs = defaultTimeoutMs, allowNonZero = false, withStatus = false } = {}){
-    const argv = args.map(String);
+    const argv = [...target.prefixArgs, ...args.map(String)];
     return new Promise((resolve, reject) => {
-      execFileImpl(bin, argv, {
+      execFileImpl(target.cmd, argv, {
         timeout: timeoutMs,
         maxBuffer: 8 * 1024 * 1024,
         /* 不繼承 shell，不帶 GMGN_ALLOW_AUTOMATED_TRADES 以外的東西 */
         env: process.env,
+        shell: !!target.needsShell,
         /* stdin 關掉。gmgn-cli 的互動確認會從 tty 讀一個手打的 yes，
            繼承 stdin 的話那個等待會一路卡到逾時，外面看起來就是整支程式死掉。
            關掉之後它會立刻失敗並回報原因 —— 這正是我們要的：
@@ -40,7 +50,7 @@ export function createCli({ bin = "gmgn-cli", execFileImpl = execFile, defaultTi
           return reject(new GmgnCliError("找不到 gmgn-cli", { hint: "執行 npm install -g gmgn-cli" }));
         }
         if(err && err.killed){
-          return reject(new GmgnCliError(`gmgn-cli ${argv[0]} 逾時`, { hint: "網路或 GMGN 回應太慢" }));
+          return reject(new GmgnCliError(`gmgn-cli ${args[0]} 逾時`, { hint: "網路或 GMGN 回應太慢" }));
         }
 
         const blob = out + "\n" + errOut;
@@ -75,7 +85,7 @@ export function createCli({ bin = "gmgn-cli", execFileImpl = execFile, defaultTi
         }
 
         if(err && !allowNonZero && !withStatus){
-          return reject(new GmgnCliError(`gmgn-cli ${argv.join(" ")} 失敗`, { stderr: errOut || out }));
+          return reject(new GmgnCliError(`gmgn-cli ${args.join(" ")} 失敗`, { stderr: errOut || out }));
         }
 
         /* --raw 會輸出 JSON，但有些版本會混入提示行，所以抓第一個 JSON 區塊 */
