@@ -52,7 +52,10 @@ export const config = {
     /* 一輪驗幾顆、同時驗幾顆。併發數要壓在限流漏桶容量（20）之下：
        每顆 2 個請求，併發 4 就是一次 8 個，還有餘裕給監控和報價。 */
     vetBatchSize: Math.round(numEnv("AUTO_VET_BATCH", 8)),
-    vetConcurrency: Math.round(numEnv("AUTO_VET_CONCURRENCY", 4))
+    vetConcurrency: Math.round(numEnv("AUTO_VET_CONCURRENCY", 4)),
+    /* 連不上 Telegram 超過這麼久就自動解除武裝（分鐘）。
+       「你叫不停它」和「它在花錢」不該同時成立。 */
+    deadManMs: Math.max(60000, numEnv("AUTO_DEADMAN_MINUTES", 15) * 60000)
   },
   risk: {
     bankrollUsd: numEnv("BANKROLL_USD", 100),

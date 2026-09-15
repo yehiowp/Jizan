@@ -48,7 +48,8 @@ async function main(){
   const { say } = botApi;
   const reconciler = createReconciler({ cli, store, trader, say });
   const monitor = createMonitor({ store, trader, say, reconciler });
-  const autoTrader = createAutoTrader({ store, trader, say });
+  const autoTrader = createAutoTrader({ store, trader, say,
+    telegramSilentMs: () => botApi.telegramSilentMs() });
   botApi.attachAutoTrader(autoTrader);
   botApi.attachNarrative(createNarrative({ cli }));
 

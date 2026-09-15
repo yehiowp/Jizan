@@ -37,7 +37,7 @@ export async function mapLimit(items, limit, fn){
   return out;
 }
 
-export function createAutoTrader({ store, trader, say, cfg = config }){
+export function createAutoTrader({ store, trader, say, telegramSilentMs = null, cfg = config }){
   let timer = null;
   let running = false;
 
@@ -108,25 +108,43 @@ export function createAutoTrader({ store, trader, say, cfg = config }){
         return { skipped: "未武裝" };
       }
 
-      /* 2. 全域交易開關（單日虧損、停機線觸發時會被關掉） */
+      /* 2. 斷線保險：連不上 Telegram 就自己停下來。
+
+         這道防線補的是一個很具體的缺口 —— 電腦連得到 GMGN、卻連不到 Telegram 時，
+         它會繼續自己買，而你發不出 /auto off。也就是「它還在花錢，但你叫不停它」。
+         一個你無法中止的自動下單程式，不該被允許繼續下單。 */
+      if(telegramSilentMs){
+        const silent = telegramSilentMs();
+        if(silent > cfg.auto.deadManMs){
+          store.disarmAuto(`連不上 Telegram 超過 ${Math.round(silent / 60000)} 分鐘`);
+          log.warn("Telegram 失聯，自動解除武裝", { silentMinutes: Math.round(silent / 60000) });
+          /* 這則訊息多半送不出去，但網路一恢復就會補到 */
+          await say(`⛔ 連不上 Telegram 超過 ${Math.round(silent / 60000)} 分鐘，已自動解除武裝。\n`
+                  + "理由：你發不出 /auto off 的時候，它不該還在自己買。\n"
+                  + "確認一切正常後重新 /auto on。");
+          return { skipped: "Telegram 失聯" };
+        }
+      }
+
+      /* 3. 全域交易開關（單日虧損、停機線觸發時會被關掉） */
       if(!store.state.tradingEnabled){
         store.disarmAuto(`交易已停用：${store.state.disabledReason}`);
         await say(`⛔ 交易已停用（${store.state.disabledReason}），自動武裝一併解除。`);
         return { skipped: "交易已停用" };
       }
 
-      /* 3. 當日額度 */
+      /* 4. 當日額度 */
       const budget = dailyBudget();
       if(!budget.ok) return { skipped: budget.reasons[0] };
 
-      /* 4. 掃描 */
+      /* 5. 掃描 */
       const { all, candidates } = await trader.scan();
       const pool = candidates.filter(c => c.score >= cfg.auto.minScore);
       if(!pool.length){
         return { skipped: `${all.length} 顆裡沒有達到自動門檻 ${cfg.auto.minScore} 的` };
       }
 
-      /* 5. 平行驗證前幾顆。
+      /* 6. 平行驗證前幾顆。
          逐顆驗的話，前面四顆被刷掉就是四個連續往返才輪到第五顆。
          平行跑一批，一輪能看更多顆而且更快。併發數壓在限流桶容量之下：
          每顆 2 個請求（info + security），權重各 1，桶子是 20。 */
@@ -188,7 +206,7 @@ export function createAutoTrader({ store, trader, say, cfg = config }){
           continue;
         }
 
-        /* 6. 下單 */
+        /* 7. 下單 */
         const res = await trader.executeBuy(plan);
         if(!res.ok){
           await say(`🤖 自動買入失敗 ${coin.symbol}：${res.error}`);

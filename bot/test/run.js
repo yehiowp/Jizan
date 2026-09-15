@@ -553,14 +553,17 @@ function freshStore(){
   autoCfg.mode.autoBuy = true;
   autoCfg.auto = { minScore: 72, maxWarnings: 2, allowDowngrade: false,
                    maxTradesPerDay: 2, maxSpendPerDayUsd: 40, armHours: 12,
-                   vetBatchSize: 8, vetConcurrency: 4 };
+                   vetBatchSize: 8, vetConcurrency: 4, deadManMs: 15 * 60000 };
 
   function autoSetup(overrides = {}){
     const store = freshStore();
     const cli = createCli({ execFileImpl: makeExecFile(overrides) });
     const trader = createTrader({ cli, store, cfg: autoCfg });
     const said = [];
-    const auto = createAutoTrader({ store, trader, say: m => { said.push(m); return Promise.resolve(); }, cfg: autoCfg });
+    const auto = createAutoTrader({ store, trader,
+      say: m => { said.push(m); return Promise.resolve(); },
+      telegramSilentMs: overrides.telegramSilentMs ?? (() => 0),
+      cfg: autoCfg });
     return { store, trader, auto, said };
   }
 
@@ -1254,6 +1257,67 @@ function freshStore(){
     const json = seen[seen.indexOf("--condition-orders") + 1];
     assert("condition-orders 的 JSON 完整保留",
       JSON.parse(json)[0].order_type === "loss_stop", json);
+  }
+}
+
+/* ═══════════════════════════ 21. Telegram 斷線保險 ═══════════════════════════ */
+{
+  const { createAutoTrader } = await import("../src/autotrader.js");
+  const autoCfg2 = JSON.parse(JSON.stringify(config));
+  autoCfg2.mode.autoBuy = true;
+  autoCfg2.auto = { minScore: 72, maxWarnings: 2, allowDowngrade: false,
+                    maxTradesPerDay: 4, maxSpendPerDayUsd: 60, armHours: 12,
+                    vetBatchSize: 8, vetConcurrency: 4, deadManMs: 15 * 60000 };
+
+  function deadManSetup(silentMs){
+    const store = freshStore();
+    const cli = createCli({ execFileImpl: makeExecFile() });
+    const trader = createTrader({ cli, store, cfg: autoCfg2 });
+    const said = [];
+    const auto = createAutoTrader({ store, trader,
+      say: m => { said.push(m); return Promise.resolve(); },
+      telegramSilentMs: () => silentMs, cfg: autoCfg2 });
+    store.armAuto(12);
+    return { store, auto, said };
+  }
+
+  /* 還連得上 → 照常交易 */
+  {
+    const { store, auto } = deadManSetup(60 * 1000);
+    const r = await auto.cycle();
+    assert("Telegram 正常時照常運作", r.skipped !== "Telegram 失聯" && store.isAutoArmed(), JSON.stringify(r));
+  }
+
+  /* 失聯超過門檻 → 自己解除武裝，不再下單 */
+  {
+    const { store, auto, said } = deadManSetup(20 * 60 * 1000);
+    const before = store.openPositions().length;
+    const r = await auto.cycle();
+    assert("失聯超過門檻就停手", r.skipped === "Telegram 失聯", JSON.stringify(r));
+    assert("失聯時自動解除武裝", store.isAutoArmed() === false);
+    assert("不會在失聯期間開新倉", store.openPositions().length === before);
+    assert("解除原因寫清楚", /連不上 Telegram/.test(store.autoDisarmReason()), store.autoDisarmReason());
+    assert("有留下通知（等連線恢復會補送）",
+      said.some(m => m.includes("自動解除武裝")), JSON.stringify(said));
+  }
+
+  /* 剛好在門檻內 → 還不該停 */
+  {
+    const { store, auto } = deadManSetup(14 * 60 * 1000);
+    const r = await auto.cycle();
+    assert("門檻內不誤判", r.skipped !== "Telegram 失聯" && store.isAutoArmed(), JSON.stringify(r));
+  }
+
+  /* 沒接這個偵測器時不該爆掉（向後相容） */
+  {
+    const store = freshStore();
+    const cli = createCli({ execFileImpl: makeExecFile() });
+    const trader = createTrader({ cli, store, cfg: autoCfg2 });
+    const auto = createAutoTrader({ store, trader, say: () => Promise.resolve(), cfg: autoCfg2 });
+    store.armAuto(12);
+    let ok = true;
+    try { await auto.cycle(); } catch { ok = false; }
+    assert("沒提供偵測器也能跑", ok);
   }
 }
 

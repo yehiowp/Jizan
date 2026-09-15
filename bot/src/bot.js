@@ -17,10 +17,15 @@ export function createBot({ cli, store, trader, cfg = config }){
   let narrative = null;
   let pendingArmHours = null;   // /auto on <小時> 指定的時數，等按下確認才生效
 
+  /* 最後一次成功跟 Telegram 往來的時間。自動交易會拿這個當「你還連得上我嗎」的判準 ——
+     見 autotrader 的斷線保險。啟動當下先當作是通的，不然第一輪就會被自己關掉。 */
+  let lastTelegramOk = Date.now();
+
   /* say 永遠不 reject。Telegram 掛掉、網路斷一下都不該讓對帳或自動交易的
      迴圈中途炸掉 —— 那會變成「訊息沒送出」升級成「後面的部位沒被檢查」。 */
   const say = (text, extra = {}) =>
     bot.sendMessage(owner, text, { disable_web_page_preview: true, ...extra })
+       .then(r => { lastTelegramOk = Date.now(); return r; })
        .catch(e => { log.warn("Telegram 送不出訊息", { error: e.message }); return null; });
 
   /* 只認一個人。其他任何 chat 或 user 一律丟掉，不回話也不透露機器人在做什麼。 */
@@ -446,6 +451,7 @@ export function createBot({ cli, store, trader, cfg = config }){
 
   /* ── 路由 ── */
   bot.on("message", async msg => {
+    lastTelegramOk = Date.now();   // 收得到訊息也算通
     if(!isOwner(msg)) return;
     const text = (msg.text ?? "").trim();
     if(!text.startsWith("/")) return;
@@ -536,6 +542,7 @@ export function createBot({ cli, store, trader, cfg = config }){
   return {
     bot, say, commands, doSell, pendingPlans,
     attachAutoTrader(at){ autoTrader = at; },
+    telegramSilentMs(){ return Date.now() - lastTelegramOk; },
     attachNarrative(n){ narrative = n; }
   };
 }
