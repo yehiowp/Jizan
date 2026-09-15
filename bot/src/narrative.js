@@ -123,8 +123,7 @@ export function createNarrative({ cli, cfg = config }){
     /* 抓熱搜 + 成交榜，合併後分群 */
     async hotIps({ interval = "1h", limit = 100, minTokens = 2 } = {}){
       const [hotSearch, trending] = await Promise.all([
-        cli.run(["market", "hot-searches", "--chain", chain, "--interval", interval,
-                 "--limit", String(limit), "--raw"]).then(unwrapList).catch(() => []),
+        cli.hotSearches({ chain, interval, limit }).catch(() => []),
         cli.trending({ chain, interval, limit }).catch(() => [])
       ]);
 
@@ -159,18 +158,4 @@ export function createNarrative({ cli, cfg = config }){
       return notes;
     }
   };
-}
-
-function unwrapList(res){
-  const data = res && typeof res === "object" && "data" in res && res.code !== undefined ? res.data : res;
-  if(Array.isArray(data)) return data;
-  /* hot-searches 可以一次查多條鏈，回傳會依鏈分組 */
-  if(data && typeof data === "object"){
-    for(const key of ["rank", "list", "tokens", "coins"]){
-      if(Array.isArray(data[key])) return data[key];
-    }
-    const groups = Object.values(data).filter(Array.isArray);
-    if(groups.length) return groups.flat();
-  }
-  return [];
 }

@@ -2,7 +2,7 @@ import TelegramBot from "node-telegram-bot-api";
 import { config } from "./config.js";
 import { log } from "./log.js";
 import { sanitize } from "./score.js";
-import { stats } from "./stats.js";
+import { stats, realMoneyGate } from "./stats.js";
 
 const PLAN_TTL_MS = 120000;   // 報價會過期，確認鈕不能無限期有效
 
@@ -16,8 +16,11 @@ export function createBot({ cli, store, trader, cfg = config }){
   let autoTrader = null;   // 由 index.js 在建立後掛上來（它需要 say，而 say 來自這裡）
   let narrative = null;
 
+  /* say 永遠不 reject。Telegram 掛掉、網路斷一下都不該讓對帳或自動交易的
+     迴圈中途炸掉 —— 那會變成「訊息沒送出」升級成「後面的部位沒被檢查」。 */
   const say = (text, extra = {}) =>
-    bot.sendMessage(owner, text, { disable_web_page_preview: true, ...extra });
+    bot.sendMessage(owner, text, { disable_web_page_preview: true, ...extra })
+       .catch(e => { log.warn("Telegram 送不出訊息", { error: e.message }); return null; });
 
   /* 只認一個人。其他任何 chat 或 user 一律丟掉，不回話也不透露機器人在做什麼。 */
   function isOwner(msg){
@@ -218,18 +221,33 @@ export function createBot({ cli, store, trader, cfg = config }){
     },
 
     async stats(){
-      const s = stats(store, cfg);
-      if(!s.n) return say("還沒有平倉紀錄。");
+      /* 模擬單和真錢單一定要分開看：
+         混在一起算的話，上真錢之後那串漂亮的模擬紀錄會一直稀釋真實績效。 */
+      const dry = stats(store, cfg, { mode: "dry" });
+      const live = stats(store, cfg, { mode: "live" });
+      if(!dry.n && !live.n) return say("還沒有平倉紀錄。");
+
+      const block = (title, x) => x.n ? [
+        title,
+        `　${x.n} 筆　勝率 ${(x.winRate * 100).toFixed(0)}%　期望值 ${x.expectancy.toFixed(2)}R`,
+        `　平均賺 ${x.avgWinR.toFixed(2)}R　平均賠 ${x.avgLossR.toFixed(2)}R　獲利因子 ${x.profitFactor.toFixed(2)}`,
+        `　最大回撤 ${x.maxDD.toFixed(1)}%　最大連虧 ${x.worstStreak}　淨損益 ${usd(x.netPnl)}`
+      ] : [`${title}　尚無紀錄`];
+
+      const gate = realMoneyGate(store, cfg);
       await say([
-        `已平倉 ${s.n} 筆（模擬 ${s.dryRunCount} 筆）`,
-        `勝率 ${(s.winRate * 100).toFixed(0)}%　期望值 ${s.expectancy.toFixed(2)}R`,
-        `平均賺 ${s.avgWinR.toFixed(2)}R　平均賠 ${s.avgLossR.toFixed(2)}R`,
-        `獲利因子 ${s.profitFactor.toFixed(2)}　最大連虧 ${s.worstStreak}`,
-        `最大回撤 ${s.maxDD.toFixed(1)}%　淨損益 ${usd(s.netPnl)}`,
+        ...block("🧪 模擬", dry),
         "",
-        s.expectancy > 0
-          ? "期望值為正 —— 但樣本數不夠多之前不要放大部位。"
-          : "期望值為負：這套打法目前每下一注就是在丟錢。"
+        ...block("💸 真錢", live),
+        "",
+        "上真錢門檻（只看模擬單）：",
+        ...gate.checks.map(c => `${c.ok ? "✓" : "○"} ${c.label}　現在 ${c.now}`),
+        "",
+        live.n
+          ? (live.expectancy > 0
+              ? "真錢期望值為正。樣本夠多之前不要放大部位。"
+              : "真錢期望值為負 —— 現在每下一注就是在丟錢。")
+          : (gate.pass ? "模擬已達門檻，可以考慮小額上真錢。" : "模擬還沒達標，先別碰真錢。")
       ].join("\n"));
     },
 

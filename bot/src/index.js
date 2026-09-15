@@ -59,6 +59,16 @@ async function main(){
     log.info("啟動時解除舊的自動武裝", {});
   }
 
+  /* 先對帳再開始跑。機器人關著的這段期間，伺服器端的停損可能已經成交了；
+     等第一個監控間隔才發現的話，中間任何一次 /status 或自動交易的風控判斷
+     都是拿過期的帳本在算。 */
+  try {
+    const r = await reconciler.run();
+    if(r.closed || r.flagged) log.info("啟動對帳", r);
+  } catch(e){
+    log.warn("啟動對帳失敗，交給監控迴圈重試", { error: e.message });
+  }
+
   monitor.start();
   if(config.mode.autoBuy) autoTrader.start();
 

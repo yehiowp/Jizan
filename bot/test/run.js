@@ -1070,6 +1070,61 @@ function freshStore(){
   }
 }
 
+/* ═══════════════════════════ 17. 模擬與真錢分開計算 ═══════════════════════════ */
+{
+  const store = freshStore();
+  /* 模擬：3 勝 1 敗，很漂亮。真錢：2 敗，很難看。 */
+  const mk = (id, pnl, r, dryRun, day) => ({
+    id, symbol: id, closedAt: `2026-01-${day}T00:00:00.000Z`, pnlUsd: pnl, r, dryRun
+  });
+  [mk("d1", 20, 2, true, "01"), mk("d2", 20, 2, true, "02"),
+   mk("d3", 20, 2, true, "03"), mk("d4", -7, -1, true, "04"),
+   mk("L1", -7, -1, false, "05"), mk("L2", -7, -1, false, "06")]
+    .forEach(t => store.recordTrade(t));
+
+  const all = stats(store, config);
+  const dry = stats(store, config, { mode: "dry" });
+  const live = stats(store, config, { mode: "live" });
+
+  assert("模擬只算模擬單", dry.n === 4 && dry.wins === 3, JSON.stringify([dry.n, dry.wins]));
+  assert("真錢只算真錢單", live.n === 2 && live.wins === 0, JSON.stringify([live.n, live.wins]));
+  assert("兩者相加等於全部", dry.n + live.n === all.n, `${dry.n}+${live.n} vs ${all.n}`);
+
+  /* 這正是分開算的理由：混在一起看，真錢全虧卻顯示正期望值 */
+  assert("混合統計會粉飾真錢的虧損", all.expectancy > 0, String(all.expectancy));
+  assert("真錢單獨看是負期望值", live.expectancy < 0, String(live.expectancy));
+  assert("模擬單獨看是正期望值", dry.expectancy > 0, String(dry.expectancy));
+
+  /* 上真錢門檻只看模擬單 —— 拿真錢成績決定要不要上真錢，邏輯是反的 */
+  const gate = realMoneyGate(store, config);
+  assert("門檻用模擬筆數判斷", gate.checks[0].now === "4 筆", gate.checks[0].now);
+  assert("4 筆不夠 30 筆，不通過", gate.pass === false);
+}
+
+/* ═══════════════════════════ 18. 狀態檔不會無限長大 ═══════════════════════════ */
+{
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "memebot-prune-"));
+  const file = path.join(dir, "state.json");
+
+  const old = Date.now() - 48 * 3600 * 1000;
+  const fresh = Date.now() - 60 * 1000;
+  fs.writeFileSync(file, JSON.stringify({
+    seen: { oldOne: old, freshOne: fresh, brokenOne: "不是數字" },
+    positions: [], trades: [], daily: {}
+  }));
+
+  const s = createStore(file);
+  assert("載入時清掉過期的 seen", s.wasSeen("oldOne", 24 * 3600 * 1000) === false);
+  assert("載入時保留還在有效期的", s.wasSeen("freshOne") === true);
+  assert("壞掉的值也一併清掉", s.seenCount() === 1, String(s.seenCount()));
+
+  /* 累積過多時會自己清 */
+  for(let i = 0; i < 600; i++) s.state.seen[`x${i}`] = old;
+  s.markSeen("trigger");
+  assert("超過上限時自動清理", s.seenCount() < 600, String(s.seenCount()));
+  assert("清理後新的那筆還在", s.wasSeen("trigger") === true);
+}
+
 console.log("");
 if(failures){
   console.log(`${failures} 項測試失敗`);

@@ -19,11 +19,26 @@ export function createStore(filePath){
   const dir = path.dirname(filePath);
   let state;
 
+  /* seen 每掃到一顆幣就寫一筆，不清理的話 state.json 會一路長大，
+     load/save 越來越慢，最後每次通知都要重寫一個幾 MB 的檔案。
+     所有 cooldown 最長是 6 小時，24 小時以外的一律沒有意義。 */
+  const SEEN_TTL_MS = 24 * 3600 * 1000;
+  function pruneSeen(st){
+    const cutoff = Date.now() - SEEN_TTL_MS;
+    let removed = 0;
+    for(const [k, t] of Object.entries(st.seen ?? {})){
+      if(typeof t !== "number" || t < cutoff){ delete st.seen[k]; removed++; }
+    }
+    return removed;
+  }
+
   function load(){
     try {
       if(fs.existsSync(filePath)){
         const parsed = JSON.parse(fs.readFileSync(filePath, "utf8"));
-        return { ...structuredClone(DEFAULT_STATE), ...parsed };
+        const merged = { ...structuredClone(DEFAULT_STATE), ...parsed };
+        pruneSeen(merged);
+        return merged;
       }
     } catch(e){
       /* 檔案壞了就備份起來重來，不要直接吃掉使用者的紀錄 */
@@ -80,7 +95,15 @@ export function createStore(filePath){
       return state.positions.reduce((s, p) => s + (p.costUsd || 0), 0);
     },
 
-    markSeen(addr){ state.seen[addr] = Date.now(); save(); },
+    pruneSeen: () => pruneSeen(state),
+    seenCount: () => Object.keys(state.seen ?? {}).length,
+
+    markSeen(addr){
+      state.seen[addr] = Date.now();
+      /* 順手清一次，不讓它累積到下次啟動 */
+      if(Object.keys(state.seen).length > 500) pruneSeen(state);
+      save();
+    },
 
     /* 驗過但沒過閘的幣，短時間內不要重驗 —— 省往返也省限流額度。
        冷卻比通知冷卻短很多，因為盤況真的會在十幾分鐘內改變。 */
