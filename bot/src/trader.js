@@ -12,18 +12,27 @@ export function createTrader({ cli, store, cfg = config }){
 
   /* gas-price 同時給優先費三檔與原生幣美元價。
      ⚠️ Solana 的 *_prio_fee 三檔恆為 1（無意義佔位），照它算會變成 1 SOL。
-        只能讀 *_prio_fee_mixed。 */
-  async function gasContext(){
+        只能讀 *_prio_fee_mixed。
+
+     快取 30 秒：SOL 價格與優先費在這個尺度內不會有意義的變化，
+     但每次下單前多一個往返就是多幾百毫秒 —— 迷因幣的價格在那幾百毫秒裡會動。 */
+  let gasCache = null;
+  const GAS_TTL_MS = 30000;
+
+  async function gasContext({ force = false } = {}){
+    if(!force && gasCache && Date.now() - gasCache.at < GAS_TTL_MS) return gasCache.value;
     const g = await cli.gasPrice({ chain });
     const tier = cfg.exec.gasTier;
     const prio = num(g?.[`${tier}_prio_fee_mixed`]);
     const nativeUsd = num(g?.native_token_usd_price);
     if(!(nativeUsd > 0)) throw new Error("gas-price 沒給 native_token_usd_price，無法把美元換算成 SOL");
-    return {
+    const value = {
       nativeUsd,
       priorityFeeSol: prio > 0 ? prio : 0.001,   // 拿不到就用文件裡 low 檔的實測值
       estimateSec: num(g?.[`${tier}_estimate_time`])
     };
+    gasCache = { at: Date.now(), value };
+    return value;
   }
 
   return {

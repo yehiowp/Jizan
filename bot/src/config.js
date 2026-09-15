@@ -71,12 +71,12 @@ export const config = {
   filter: {
     minScore: numEnv("MIN_SCORE", 62),
     minDepthUsd: numEnv("MIN_DEPTH_USD", 30000),
-    interval: str("TRENDING_INTERVAL", "1h"),
+    interval: str("TRENDING_INTERVAL", "5m"),
     alertCooldownHours: numEnv("ALERT_COOLDOWN_HOURS", 6)
   },
   timing: {
-    scanIntervalSec: Math.max(60, numEnv("SCAN_INTERVAL_SEC", 300)),
-    monitorIntervalSec: Math.max(30, numEnv("MONITOR_INTERVAL_SEC", 120))
+    scanIntervalSec: Math.max(30, numEnv("SCAN_INTERVAL_SEC", 90)),
+    monitorIntervalSec: Math.max(20, numEnv("MONITOR_INTERVAL_SEC", 60))
   }
 };
 
