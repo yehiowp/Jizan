@@ -1,0 +1,939 @@
+<!DOCTYPE html>
+<html lang="zh-TW">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover, user-scalable=no" />
+<title>迷因幣獵人</title>
+<meta name="apple-mobile-web-app-capable" content="yes" />
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
+<meta name="apple-mobile-web-app-title" content="迷因獵人" />
+<meta name="theme-color" content="#0F172A" />
+<link rel="apple-touch-icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='180' height='180' viewBox='0 0 180 180'%3E%3Cdefs%3E%3ClinearGradient id='g' x1='0' y1='0' x2='1' y2='1'%3E%3Cstop offset='0' stop-color='%230F172A'/%3E%3Cstop offset='1' stop-color='%234F46E5'/%3E%3C/linearGradient%3E%3C/defs%3E%3Crect width='180' height='180' rx='40' fill='url(%23g)'/%3E%3Ctext x='90' y='122' font-size='86' text-anchor='middle'%3E%F0%9F%90%B8%3C/text%3E%3C/svg%3E" />
+<style>
+  * { margin:0; padding:0; box-sizing:border-box; -webkit-tap-highlight-color:transparent; }
+  html, body { background:#F8FAFC; font-family:'PingFang TC','Noto Sans TC',-apple-system,sans-serif; color:#0F172A; }
+  input, button, select { font-family:inherit; }
+  .tab-btn { flex:1; border:none; border-radius:10px; padding:8px 0; font-size:13px; font-weight:600; background:transparent; color:#64748B; }
+  .tab-btn.active { background:#fff; color:#6366F1; box-shadow:0 1px 3px rgba(0,0,0,0.08); }
+  .nav-btn { flex:1; border:none; background:none; display:flex; flex-direction:column; align-items:center; gap:2px; padding:6px 0; }
+  .card { background:#fff; border-radius:16px; padding:16px; box-shadow:0 1px 3px rgba(0,0,0,0.08); }
+  .input { width:100%; padding:10px 12px; border-radius:10px; border:1.5px solid #E2E8F0; font-size:14px; outline:none; box-sizing:border-box; margin-bottom:12px; background:#fff; }
+  .modal-bg { position:fixed; inset:0; background:rgba(0,0,0,0.5); z-index:200; display:flex; align-items:flex-end; }
+  .modal-box { background:#fff; width:100%; max-width:540px; margin:0 auto; border-radius:20px 20px 0 0; padding:20px 20px 36px; max-height:90vh; overflow-y:auto; }
+  .bar { height:6px; background:#E2E8F0; border-radius:3px; overflow:hidden; }
+  .bar-fill { height:100%; transition:width 0.4s; }
+  .pill { display:inline-block; padding:3px 8px; border-radius:999px; font-size:10px; font-weight:700; }
+  .spin { display:inline-block; width:12px; height:12px; border:2px solid rgba(255,255,255,0.35); border-top-color:#fff; border-radius:50%; animation:sp 0.8s linear infinite; }
+  @keyframes sp { to { transform:rotate(360deg); } }
+</style>
+</head>
+<body>
+<div id="app"></div>
+<script>
+/* ============================================================
+   迷因幣獵人 — 掃描 / 風控 / 模擬倉
+   資料來源：DexScreener 公開 API（免金鑰，直接由瀏覽器呼叫）
+   所有資料只存在你自己的 localStorage，不上傳任何伺服器。
+   本工具不下單、不碰私鑰、不保證獲利。
+   ============================================================ */
+
+var C = { ink:"#0F172A", indigo:"#6366F1", indigoDark:"#4F46E5", green:"#10B981",
+          red:"#EF4444", amber:"#F59E0B", blue:"#3B82F6", bg:"#F8FAFC",
+          border:"#E2E8F0", sub:"#64748B" };
+
+var API = "https://api.dexscreener.com";
+var STORE_KEY = "memehunter_v1";
+
+var CHAINS = [
+  { id:"all", name:"全部" },
+  { id:"solana", name:"Solana" },
+  { id:"base", name:"Base" },
+  { id:"bsc", name:"BSC" },
+  { id:"ethereum", name:"ETH" }
+];
+
+/* 進場前必勾的紀律清單。少一項都不准下單（模擬倉也一樣，習慣要先養成）。 */
+var CHECKLIST = [
+  "這筆賠光我也不影響生活費",
+  "我已經設好停損價，且會真的執行",
+  "我不是因為看到別人賺才追的",
+  "流動性夠我這個部位滑價出場",
+  "今天還沒觸及單日虧損上限"
+];
+
+var DEFAULT_CONFIG = {
+  bankroll: 1000,      // 總本金（USD）
+  riskPct: 2,          // 單筆最多虧本金的 %
+  stopPct: 25,         // 預設停損 %
+  targetR: 2,          // 預設停利 = 幾倍風險
+  maxOpen: 3,          // 同時最多幾個部位
+  dailyLossPct: 6,     // 單日虧損上限（本金 %）→ 觸及就停手
+  minLiq: 30000,       // 流動性門檻（USD）
+  slipPct: 1.5,        // 單邊摩擦成本（手續費＋滑價＋優先費）
+  chain: "solana"
+};
+
+var state = {
+  tab: "scan",
+  modal: null,
+  form: {},
+  loading: false,
+  msg: "",
+  coins: [],
+  lastScan: null,
+  scanError: "",
+  data: loadData()
+};
+
+function loadData(){
+  try {
+    var raw = localStorage.getItem(STORE_KEY);
+    if(raw){
+      var d = JSON.parse(raw);
+      d.config = Object.assign({}, DEFAULT_CONFIG, d.config || {});
+      d.trades = d.trades || [];
+      return d;
+    }
+  } catch(e){}
+  return { config: Object.assign({}, DEFAULT_CONFIG), trades: [] };
+}
+function persist(){
+  try { localStorage.setItem(STORE_KEY, JSON.stringify(state.data)); } catch(e){}
+  render();
+}
+function setState(patch){ Object.assign(state, patch); render(); }
+function flash(msg, ms){ setState({msg:msg}); setTimeout(function(){ if(state.msg===msg) setState({msg:""}); }, ms||3000); }
+
+/* ---------- 小工具 ---------- */
+function clamp(v,a,b){ return v<a?a:(v>b?b:v); }
+function num(v){ v = parseFloat(v); return isFinite(v) ? v : 0; }
+function fmtUsd(n){
+  n = num(n);
+  if(Math.abs(n) >= 1000000) return "$" + (n/1000000).toFixed(2) + "M";
+  if(Math.abs(n) >= 1000) return "$" + (n/1000).toFixed(1) + "K";
+  return "$" + n.toFixed(Math.abs(n) < 10 ? 2 : 0);
+}
+function fmtPrice(p){
+  p = num(p);
+  if(p === 0) return "-";
+  if(p >= 1) return "$" + p.toFixed(4);
+  var s = p.toPrecision(4);
+  return "$" + (p < 0.000001 ? Number(s).toExponential(2) : Number(s).toString());
+}
+function fmtPct(n, digits){
+  n = num(n);
+  return (n > 0 ? "+" : "") + n.toFixed(digits == null ? 1 : digits) + "%";
+}
+function fmtAge(min){
+  if(min == null) return "?";
+  if(min < 60) return Math.round(min) + " 分";
+  if(min < 1440) return (min/60).toFixed(1) + " 小時";
+  return Math.round(min/1440) + " 天";
+}
+function todayStr(){ return new Date().toISOString().slice(0,10); }
+
+/* ============================================================
+   1. 掃描：抓 DexScreener 的推廣／新上架代幣，解析成交易對
+   ============================================================ */
+
+function fetchJson(url){
+  return fetch(url, { headers:{ "Accept":"application/json" } }).then(function(r){
+    if(!r.ok) throw new Error("HTTP " + r.status);
+    return r.json();
+  });
+}
+
+/* 把各端點回傳的東西統一成 {chainId, tokenAddress} 陣列 */
+function extractTokens(payload){
+  var arr = Array.isArray(payload) ? payload : (payload && payload.tokens) || [];
+  var out = [];
+  arr.forEach(function(t){
+    if(t && t.chainId && t.tokenAddress) out.push({ chainId:t.chainId, tokenAddress:t.tokenAddress });
+  });
+  return out;
+}
+
+function scan(){
+  if(state.loading) return;
+  setState({ loading:true, scanError:"", msg:"掃描中…" });
+
+  var sources = [
+    fetchJson(API + "/token-boosts/top/v1").catch(function(){ return []; }),
+    fetchJson(API + "/token-boosts/latest/v1").catch(function(){ return []; }),
+    fetchJson(API + "/token-profiles/latest/v1").catch(function(){ return []; })
+  ];
+
+  Promise.all(sources).then(function(results){
+    var seen = {}, tokens = [];
+    results.forEach(function(r){
+      extractTokens(r).forEach(function(t){
+        var key = t.chainId + ":" + t.tokenAddress;
+        if(seen[key]) return;
+        seen[key] = 1;
+        if(state.data.config.chain !== "all" && t.chainId !== state.data.config.chain) return;
+        tokens.push(t);
+      });
+    });
+    if(!tokens.length) throw new Error("no-tokens");
+    return resolvePairs(tokens.slice(0, 90));
+  }).then(function(pairs){
+    var byToken = {};
+    pairs.forEach(function(p){
+      if(!p || !p.baseToken) return;
+      var key = p.chainId + ":" + p.baseToken.address;
+      var cur = byToken[key];
+      /* 同一顆幣可能有多個池子，只看流動性最深的那個 */
+      if(!cur || num(p.liquidity && p.liquidity.usd) > num(cur.liquidity && cur.liquidity.usd)) byToken[key] = p;
+    });
+    var coins = Object.keys(byToken).map(function(k){ return evaluate(byToken[k]); });
+    coins.sort(function(a,b){ return b.score - a.score; });
+    setState({ coins:coins, loading:false, lastScan:Date.now(), msg:"掃到 " + coins.length + " 顆，已排序" });
+    setTimeout(function(){ if(state.msg.indexOf("掃到") === 0) setState({msg:""}); }, 3000);
+  }).catch(function(err){
+    var why = err && err.message === "no-tokens"
+      ? "這條鏈目前沒抓到資料，換一條鏈或稍後再試"
+      : "連線失敗：DexScreener 可能擋了你的 IP 或你離線了";
+    setState({ loading:false, msg:"", scanError:why });
+  });
+}
+
+/* DexScreener 一次最多查 30 個地址，分批打 */
+function resolvePairs(tokens){
+  var byChain = {};
+  tokens.forEach(function(t){
+    (byChain[t.chainId] = byChain[t.chainId] || []).push(t.tokenAddress);
+  });
+  var calls = [];
+  Object.keys(byChain).forEach(function(chain){
+    var addrs = byChain[chain];
+    for(var i = 0; i < addrs.length; i += 30){
+      var batch = addrs.slice(i, i + 30).join(",");
+      calls.push(
+        fetchJson(API + "/tokens/v1/" + chain + "/" + batch)
+          .catch(function(){ return fetchJson(API + "/latest/dex/tokens/" + batch); })
+          .catch(function(){ return []; })
+      );
+    }
+  });
+  return Promise.all(calls).then(function(results){
+    var pairs = [];
+    results.forEach(function(r){
+      if(Array.isArray(r)) pairs = pairs.concat(r);
+      else if(r && Array.isArray(r.pairs)) pairs = pairs.concat(r.pairs);
+    });
+    return pairs;
+  });
+}
+
+/* ============================================================
+   2. 評分：全部用可驗證的客觀欄位，每一分都攤開給你看
+   ============================================================ */
+
+function logScore(v, lo, hi, max){
+  if(!(v > 0) || v <= lo) return 0;
+  return clamp(Math.log(v/lo)/Math.log(hi/lo), 0, 1) * max;
+}
+/* lo 以下和 hi 以上都是 0 分，best1~best2 之間滿分，中間線性 */
+function bandScore(v, lo, best1, best2, hi, max){
+  if(!(v > lo) || v >= hi) return 0;
+  if(v >= best1 && v <= best2) return max;
+  if(v < best1) return (v - lo)/(best1 - lo)*max;
+  return (hi - v)/(hi - best2)*max;
+}
+
+function evaluate(p){
+  var liq   = num(p.liquidity && p.liquidity.usd);
+  var vol24 = num(p.volume && p.volume.h24);
+  var t1    = (p.txns && p.txns.h1) || { buys:0, sells:0 };
+  var t24   = (p.txns && p.txns.h24) || { buys:0, sells:0 };
+  var ch    = p.priceChange || {};
+  var fdv   = num(p.fdv) || num(p.marketCap);
+  var ageMin = p.pairCreatedAt ? (Date.now() - p.pairCreatedAt)/60000 : null;
+  var vlr   = liq > 0 ? vol24/liq : 0;                        // 換手率
+  var fdvRatio = liq > 0 ? fdv/liq : 999;                     // FDV / 流動性
+  var buyRatio1 = (t1.buys + t1.sells) > 0 ? t1.buys/(t1.buys + t1.sells) : 0.5;
+  var tx24 = t24.buys + t24.sells;
+  var info = p.info || {};
+  var social = ((info.socials || []).length ? 1 : 0) + ((info.websites || []).length ? 1 : 0) + (info.imageUrl ? 1 : 0);
+
+  var f = [];
+  f.push({ k:"流動性", v:fmtUsd(liq), s:logScore(liq, 20000, 1000000, 18), max:18 });
+  f.push({ k:"換手率 24h", v:vlr.toFixed(1) + "x", s:bandScore(vlr, 0.2, 1.5, 12, 45, 16), max:16 });
+  f.push({ k:"買盤佔比 1h", v:(buyRatio1*100).toFixed(0) + "%", s:bandScore(buyRatio1, 0.40, 0.58, 0.80, 0.95, 14), max:14 });
+  f.push({ k:"動能結構", v:fmtPct(num(ch.h1)) + " / " + fmtPct(num(ch.h6)), s:momentumScore(ch), max:16 });
+  f.push({ k:"上池時間", v:fmtAge(ageMin), s:ageScore(ageMin), max:12 });
+  f.push({ k:"成交筆數 24h", v:String(tx24), s:logScore(tx24, 150, 4000, 10), max:10 });
+  f.push({ k:"FDV / 流動性", v:fdvRatio.toFixed(0) + "x", s:bandScore(fdvRatio, 0, 3, 20, 90, 8), max:8 });
+  f.push({ k:"專案資訊", v:social + "/3", s:social/3*6, max:6 });
+
+  var score = f.reduce(function(a, x){ return a + x.s; }, 0);
+  var flags = redFlags(p, { liq:liq, vlr:vlr, fdvRatio:fdvRatio, tx24:tx24, t24:t24, ageMin:ageMin, ch:ch });
+  if(flags.length) score = Math.min(score, 38);              // 有紅旗就壓分，不讓它排到前面
+
+  return {
+    chainId: p.chainId, dexId: p.dexId, url: p.url, pairAddress: p.pairAddress,
+    symbol: (p.baseToken && p.baseToken.symbol) || "?",
+    name: (p.baseToken && p.baseToken.name) || "",
+    address: (p.baseToken && p.baseToken.address) || "",
+    price: num(p.priceUsd), liq: liq, vol24: vol24, fdv: fdv, ageMin: ageMin,
+    ch: ch, buyRatio1: buyRatio1, tx24: tx24,
+    score: Math.round(score), factors: f, flags: flags, grade: grade(Math.round(score), flags.length)
+  };
+}
+
+function momentumScore(ch){
+  var h1 = num(ch.h1), h6 = num(ch.h6), h24 = num(ch.h24);
+  if(h24 > 500) return 0;                 // 已經噴爛了，這時候進場是接刀
+  if(h1 <= 0) return h6 > 0 ? 5 : 0;      // 回檔中，只給基本分
+  var s = 0;
+  s += clamp(h1/25, 0, 1)*8;              // 1 小時動能
+  if(h6 > 0) s += clamp(h6/60, 0, 1)*5;   // 6 小時同向
+  if(h1 > h6/6) s += 3;                   // 正在加速
+  return clamp(s, 0, 16);
+}
+function ageScore(m){
+  if(m == null) return 4;
+  if(m < 45) return 0;                    // 太新，狙擊機器人的主場
+  if(m < 120) return 8;
+  if(m <= 4320) return 12;                // 2 小時～3 天：觀察窗
+  if(m <= 43200) return 8;
+  return 5;
+}
+
+/* 紅旗 = 直接禁止進場，不是扣分而已 */
+function redFlags(p, m){
+  var out = [];
+  var cfg = state.data.config;
+  if(m.liq < cfg.minLiq) out.push("流動性低於你設定的 " + fmtUsd(cfg.minLiq) + "，出場會被巴很慘");
+  if(m.fdvRatio > 150) out.push("FDV 是流動性的 " + m.fdvRatio.toFixed(0) + " 倍，估值全靠空氣撐");
+  if(m.vlr > 60) out.push("換手率 " + m.vlr.toFixed(0) + "x，高度疑似洗量");
+  if(m.t24.buys > 40 && m.t24.sells === 0) out.push("24 小時內零賣單，疑似蜜罐（買得進賣不掉）");
+  if(m.ageMin != null && m.ageMin < 30) out.push("上池不到 30 分鐘，你搶不贏機器人");
+  if(num(m.ch.h24) < -60) out.push("24 小時跌超過 60%，可能正在被 rug");
+  if(m.tx24 < 150) out.push("成交筆數太少，這是個沒人的池子");
+  return out;
+}
+function grade(s, flagCount){
+  if(flagCount) return "D";
+  if(s >= 72) return "A";
+  if(s >= 58) return "B";
+  if(s >= 44) return "C";
+  return "D";
+}
+function gradeColor(g){
+  return g === "A" ? C.green : g === "B" ? C.blue : g === "C" ? C.amber : C.red;
+}
+
+/* ============================================================
+   3. 風控：部位大小、同時持倉數、單日止血線
+   這一段才是真正決定你會不會破產的東西
+   ============================================================ */
+
+function positionSize(){
+  var c = state.data.config;
+  var riskUsd = c.bankroll * c.riskPct/100;
+  var qtyUsd = c.stopPct > 0 ? riskUsd/(c.stopPct/100) : 0;
+  var cap = c.bankroll * 0.25;                    // 單一部位不超過本金 25%，避免單押
+  var capped = qtyUsd > cap;
+  return { riskUsd:riskUsd, qtyUsd:Math.min(qtyUsd, cap), capped:capped, rawQty:qtyUsd, cap:cap };
+}
+
+function openTrades(){ return state.data.trades.filter(function(t){ return !t.closedAt; }); }
+function closedTrades(){ return state.data.trades.filter(function(t){ return t.closedAt; }); }
+
+function realizedToday(){
+  var d = todayStr();
+  return closedTrades().reduce(function(s, t){
+    return t.closedAt.slice(0,10) === d ? s + num(t.pnlUsd) : s;
+  }, 0);
+}
+
+/* 回傳擋下交易的理由，空陣列才准進場 */
+function blockers(coin){
+  var c = state.data.config, out = [];
+  if(openTrades().length >= c.maxOpen) out.push("已經有 " + openTrades().length + " 個部位，達到你設的上限");
+  var lossLimit = -c.bankroll * c.dailyLossPct/100;
+  if(realizedToday() <= lossLimit) out.push("今天已虧 " + fmtUsd(realizedToday()) + "，觸及單日止血線，收手");
+  if(coin && coin.flags && coin.flags.length) out.push("這顆有 " + coin.flags.length + " 面紅旗，禁止進場");
+  return out;
+}
+
+/* ============================================================
+   4. 模擬倉：用假錢跑出真實統計，通過門檻才准上真錢
+   ============================================================ */
+
+function openPaper(){
+  var f = state.form, c = state.data.config;
+  var rawEntry = num(f.price);
+  if(rawEntry <= 0){ flash("進場價要大於 0"); return; }
+  if(!CHECKLIST.every(function(_, i){ return f["ck" + i]; })){ flash("紀律清單每一項都要勾"); return; }
+
+  var sz = positionSize();
+  var stopPct = clamp(num(f.stopPct) || c.stopPct, 1, 90);
+  var targetR = clamp(num(f.targetR) || c.targetR, 0.5, 20);
+  var entry = rawEntry * (1 + c.slipPct/100);     // 進場就先吃掉手續費和滑價
+
+  state.data.trades.unshift({
+    id: Date.now(),
+    openedAt: new Date().toISOString(),
+    symbol: f.symbol || "?", chainId: f.chainId || "", pairAddress: f.pairAddress || "", url: f.url || "",
+    rawEntry: rawEntry, entry: entry, qtyUsd: sz.qtyUsd, riskUsd: sz.qtyUsd * stopPct/100,
+    stopPct: stopPct, targetR: targetR,
+    stopPrice: entry * (1 - stopPct/100),
+    targetPrice: entry * (1 + stopPct/100*targetR),
+    lastPrice: rawEntry, score: f.score == null ? null : f.score, note: f.note || ""
+  });
+  persist();
+  closeModal();
+  flash("已建立模擬部位");
+}
+
+function closePaper(){
+  var f = state.form;
+  var t = state.data.trades.filter(function(x){ return x.id === f.id; })[0];
+  if(!t) return;
+  var rawExit = num(f.exitPrice);
+  if(rawExit <= 0){ flash("出場價要大於 0"); return; }
+  var exit = rawExit * (1 - state.data.config.slipPct/100);
+  t.rawExit = rawExit;
+  t.exit = exit;
+  t.closedAt = new Date().toISOString();
+  t.pnlUsd = t.qtyUsd * (exit/t.entry - 1);
+  t.r = t.riskUsd > 0 ? t.pnlUsd/t.riskUsd : 0;
+  t.closeReason = f.closeReason || "手動";
+  persist();
+  closeModal();
+  flash((t.pnlUsd >= 0 ? "獲利 " : "虧損 ") + fmtUsd(Math.abs(t.pnlUsd)) + "（" + t.r.toFixed(2) + "R）");
+}
+
+function refreshPrices(){
+  var open = openTrades().filter(function(t){ return t.chainId && t.pairAddress; });
+  if(!open.length){ flash("沒有持倉需要更新"); return; }
+  setState({ loading:true, msg:"更新報價中…" });
+  Promise.all(open.map(function(t){
+    return fetchJson(API + "/latest/dex/pairs/" + t.chainId + "/" + t.pairAddress)
+      .then(function(r){
+        var p = r.pair || (r.pairs && r.pairs[0]);
+        if(p && p.priceUsd) t.lastPrice = num(p.priceUsd);
+      }).catch(function(){});
+  })).then(function(){
+    persist();
+    setState({ loading:false });
+    flash("報價已更新");
+  });
+}
+
+function unrealized(t){
+  var last = num(t.lastPrice) * (1 - state.data.config.slipPct/100);
+  var pnl = t.qtyUsd * (last/t.entry - 1);
+  return { pnl:pnl, r: t.riskUsd > 0 ? pnl/t.riskUsd : 0, hitStop: num(t.lastPrice) <= t.stopPrice, hitTarget: num(t.lastPrice) >= t.targetPrice };
+}
+
+function stats(){
+  var ts = closedTrades().slice().sort(function(a,b){ return a.closedAt < b.closedAt ? -1 : 1; });
+  var n = ts.length;
+  if(!n) return { n:0 };
+  var wins = ts.filter(function(t){ return num(t.pnlUsd) > 0; });
+  var losses = ts.filter(function(t){ return num(t.pnlUsd) <= 0; });
+  var sumWin = wins.reduce(function(s,t){ return s + num(t.pnlUsd); }, 0);
+  var sumLoss = losses.reduce(function(s,t){ return s + num(t.pnlUsd); }, 0);
+  var avgWinR = wins.length ? wins.reduce(function(s,t){ return s + num(t.r); }, 0)/wins.length : 0;
+  var avgLossR = losses.length ? losses.reduce(function(s,t){ return s + num(t.r); }, 0)/losses.length : 0;
+  var winRate = wins.length/n;
+  var expectancy = winRate*avgWinR + (1 - winRate)*avgLossR;
+
+  var eq = state.data.config.bankroll, peak = eq, maxDD = 0, streak = 0, worstStreak = 0;
+  ts.forEach(function(t){
+    eq += num(t.pnlUsd);
+    if(eq > peak) peak = eq;
+    var dd = peak > 0 ? (peak - eq)/peak*100 : 0;
+    if(dd > maxDD) maxDD = dd;
+    if(num(t.pnlUsd) <= 0){ streak++; if(streak > worstStreak) worstStreak = streak; } else streak = 0;
+  });
+
+  return {
+    n:n, wins:wins.length, winRate:winRate, avgWinR:avgWinR, avgLossR:avgLossR,
+    expectancy:expectancy, netPnl:sumWin + sumLoss,
+    profitFactor: sumLoss < 0 ? sumWin/Math.abs(sumLoss) : (sumWin > 0 ? 99 : 0),
+    maxDD:maxDD, worstStreak:worstStreak, equity:eq
+  };
+}
+
+/* 上真錢的門檻：三條全過才算這套打法在你手上真的有效 */
+function realMoneyGate(){
+  var s = stats();
+  var checks = [
+    { label:"模擬交易 ≥ 30 筆", ok: s.n >= 30, now: (s.n || 0) + " 筆" },
+    { label:"期望值 > 0.2R", ok: s.n >= 30 && s.expectancy > 0.2, now: s.n ? s.expectancy.toFixed(2) + "R" : "-" },
+    { label:"最大回撤 < 25%", ok: s.n >= 30 && s.maxDD < 25, now: s.n ? s.maxDD.toFixed(1) + "%" : "-" }
+  ];
+  return { checks:checks, pass: checks.every(function(c){ return c.ok; }) };
+}
+
+function exportData(){
+  var blob = new Blob([JSON.stringify(state.data, null, 2)], { type:"application/json" });
+  var a = document.createElement("a");
+  a.href = URL.createObjectURL(blob);
+  a.download = "memehunter-" + todayStr() + ".json";
+  a.click();
+  setTimeout(function(){ URL.revokeObjectURL(a.href); }, 1000);
+}
+
+/* ============================================================
+   5. 畫面
+   ============================================================ */
+
+function el(tag, props){
+  var node = document.createElement(tag);
+  if(props){ for(var k in props){
+    if(k === "style") node.setAttribute("style", props[k]);
+    else if(k === "class") node.className = props[k];
+    else if(k.indexOf("on") === 0) node.addEventListener(k.slice(2).toLowerCase(), props[k]);
+    else if(k === "value") node.value = props[k];
+    else node.setAttribute(k, props[k]);
+  } }
+  var kids = Array.prototype.slice.call(arguments, 2);
+  kids.forEach(function appendKid(kid){
+    if(kid == null || kid === false) return;
+    if(Array.isArray(kid)){ kid.forEach(appendKid); return; }
+    node.appendChild(typeof kid === "object" ? kid : document.createTextNode(String(kid)));
+  });
+  return node;
+}
+function label(text){ return el("div",{style:"font-size:11px;color:"+C.sub+";margin-bottom:4px;"}, text); }
+function pill(text, color){ return el("span",{class:"pill",style:"background:"+color+"1A;color:"+color+";"}, text); }
+function sectionTitle(text){ return el("div",{style:"font-size:12px;font-weight:700;color:"+C.sub+";margin:18px 2px 8px;"}, text); }
+
+function numberField(key, placeholder, obj, onDone){
+  var input = el("input",{ class:"input", type:"number", placeholder:placeholder, value: obj[key] == null ? "" : obj[key] });
+  input.addEventListener("input", function(e){ obj[key] = e.target.value; if(onDone) onDone(); });
+  return input;
+}
+
+function render(){
+  var root = document.getElementById("app");
+  root.innerHTML = "";
+  var s = stats();
+  var wrap = el("div",{style:"background:"+C.bg+";min-height:100vh;max-width:540px;margin:0 auto;padding-bottom:40px;"});
+
+  /* 頂部：模擬倉績效，而不是假裝你已經賺錢 */
+  var pnlColor = (s.netPnl || 0) >= 0 ? "#86EFAC" : "#FCA5A5";
+  wrap.appendChild(el("div",{style:"background:linear-gradient(135deg,"+C.ink+","+C.indigoDark+");color:#fff;padding:calc(env(safe-area-inset-top) + 24px) 20px 24px;"},
+    el("div",{style:"display:flex;justify-content:space-between;align-items:baseline;"},
+      el("div",{style:"font-size:12px;opacity:0.75;"},"🐸 迷因幣獵人 · 模擬倉損益"),
+      el("div",{style:"font-size:11px;opacity:0.6;"}, s.n ? (s.n + " 筆已平倉") : "尚未交易")
+    ),
+    el("div",{style:"font-size:32px;font-weight:800;margin-top:6px;color:"+pnlColor+";"},
+      (s.n ? ((s.netPnl >= 0 ? "+" : "-") + fmtUsd(Math.abs(s.netPnl))) : "$0")),
+    el("div",{style:"font-size:11px;opacity:0.75;margin-top:6px;"},
+      s.n ? ("勝率 " + (s.winRate*100).toFixed(0) + "% ｜ 期望值 " + s.expectancy.toFixed(2) + "R ｜ 最大回撤 " + s.maxDD.toFixed(1) + "%")
+          : "先用假錢跑 30 筆，再決定要不要拿真錢出來")
+  ));
+
+  var body = el("div",{style:"padding:16px;"});
+
+  var tabs = el("div",{style:"display:flex;gap:2px;background:"+C.border+"66;border-radius:12px;padding:4px;margin-bottom:12px;"});
+  [["scan","掃描"],["risk","風控"],["paper","模擬倉"],["rules","規則"]].forEach(function(t){
+    tabs.appendChild(el("button",{ class:"tab-btn" + (state.tab === t[0] ? " active" : ""),
+      onClick:function(){ setState({tab:t[0]}); } }, t[1]));
+  });
+  body.appendChild(tabs);
+
+  if(state.msg) body.appendChild(el("div",{style:"background:"+C.indigo+"1A;color:"+C.indigoDark+";border-radius:10px;padding:10px 12px;font-size:12px;margin-bottom:12px;"}, state.msg));
+
+  body.appendChild(
+    state.tab === "scan"  ? renderScan()  :
+    state.tab === "risk"  ? renderRisk()  :
+    state.tab === "paper" ? renderPaper() : renderRules()
+  );
+
+  wrap.appendChild(body);
+  root.appendChild(wrap);
+
+  if(state.modal === "entry") root.appendChild(renderEntryModal());
+  if(state.modal === "close") root.appendChild(renderCloseModal());
+  if(state.modal === "detail") root.appendChild(renderDetailModal());
+}
+
+/* ---------- 掃描頁 ---------- */
+function renderScan(){
+  var box = el("div");
+
+  var chainRow = el("div",{style:"display:flex;gap:6px;flex-wrap:wrap;margin-bottom:12px;"});
+  CHAINS.forEach(function(c){
+    var sel = state.data.config.chain === c.id;
+    chainRow.appendChild(el("button",{
+      style:"padding:7px 12px;border-radius:10px;font-size:12px;font-weight:600;border:1.5px solid "+(sel?C.indigo:C.border)+";background:"+(sel?C.indigo+"1A":"#fff")+";color:"+(sel?C.indigoDark:C.sub)+";",
+      onClick:function(){ state.data.config.chain = c.id; persist(); }
+    }, c.name));
+  });
+  box.appendChild(chainRow);
+
+  box.appendChild(el("button",{
+    style:"width:100%;border:none;border-radius:12px;padding:14px;background:"+(state.loading?C.sub:C.indigo)+";color:#fff;font-weight:700;font-size:14px;margin-bottom:12px;display:flex;align-items:center;justify-content:center;gap:8px;",
+    onClick:scan
+  }, state.loading ? el("span",{class:"spin"}) : null, state.loading ? "掃描中…" : "掃描市場"));
+
+  if(state.scanError){
+    box.appendChild(el("div",{style:"background:"+C.red+"14;border-radius:12px;padding:12px;font-size:12px;color:"+C.red+";line-height:1.6;margin-bottom:12px;"},
+      "⚠️ " + state.scanError));
+  }
+
+  if(!state.coins.length && !state.loading){
+    box.appendChild(el("div",{class:"card",style:"font-size:12px;color:"+C.sub+";line-height:1.8;"},
+      el("div",{style:"font-weight:700;color:"+C.ink+";margin-bottom:6px;font-size:13px;"},"這支程式不會幫你賺錢"),
+      "它做的是另外兩件事：把明顯的詐騙盤和爛盤過濾掉，以及逼你照固定的部位大小和停損下單。",
+      el("br"), el("br"),
+      "評分只是「值不值得看一眼」，不是買入訊號。任何一顆幣都可能在你按下去的下一秒歸零。",
+      el("br"), el("br"),
+      "資料來自 DexScreener 公開 API，全部運算在你的瀏覽器裡完成。"));
+    return box;
+  }
+
+  if(state.lastScan){
+    box.appendChild(el("div",{style:"font-size:11px;color:"+C.sub+";margin:4px 2px 8px;"},
+      "更新於 " + new Date(state.lastScan).toLocaleTimeString("zh-TW") + " ｜ 依分數排序，D 級請直接跳過"));
+  }
+
+  state.coins.slice(0, 40).forEach(function(c){ box.appendChild(coinCard(c)); });
+  return box;
+}
+
+function coinCard(c){
+  var g = c.grade, gc = gradeColor(g);
+  var card = el("div",{class:"card",style:"margin-bottom:10px;"});
+
+  card.appendChild(el("div",{style:"display:flex;align-items:center;gap:10px;margin-bottom:10px;"},
+    el("div",{style:"width:38px;height:38px;border-radius:10px;background:"+gc+"1A;color:"+gc+";display:flex;align-items:center;justify-content:center;font-weight:800;font-size:16px;"}, g),
+    el("div",{style:"flex:1;min-width:0;"},
+      el("div",{style:"font-weight:700;font-size:14px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;"}, c.symbol + " · " + fmtPrice(c.price)),
+      el("div",{style:"font-size:11px;color:"+C.sub+";overflow:hidden;text-overflow:ellipsis;white-space:nowrap;"}, (c.name || "-") + " ｜ " + c.chainId + " ｜ " + fmtAge(c.ageMin))),
+    el("div",{style:"text-align:right;"},
+      el("div",{style:"font-size:18px;font-weight:800;color:"+gc+";"}, c.score),
+      el("div",{style:"font-size:10px;color:"+C.sub+";"},"/ 100"))
+  ));
+
+  var m = el("div",{style:"display:flex;gap:6px;margin-bottom:10px;"});
+  [["流動性", fmtUsd(c.liq)], ["24h 量", fmtUsd(c.vol24)], ["1h", fmtPct(num(c.ch.h1))], ["24h", fmtPct(num(c.ch.h24))]].forEach(function(x){
+    var col = x[0] === "1h" || x[0] === "24h" ? (num(x[1].replace("%","")) >= 0 ? C.green : C.red) : C.ink;
+    m.appendChild(el("div",{style:"flex:1;background:"+C.bg+";border-radius:8px;padding:6px 4px;text-align:center;"},
+      el("div",{style:"font-size:9px;color:"+C.sub+";"}, x[0]),
+      el("div",{style:"font-size:11px;font-weight:700;color:"+col+";"}, x[1])));
+  });
+  card.appendChild(m);
+
+  if(c.flags.length){
+    card.appendChild(el("div",{style:"background:"+C.red+"14;border-radius:10px;padding:8px 10px;font-size:11px;color:"+C.red+";line-height:1.6;margin-bottom:10px;"},
+      c.flags.map(function(f){ return el("div",null, "🚩 " + f); })));
+  }
+
+  var actions = el("div",{style:"display:flex;gap:6px;"});
+  actions.appendChild(el("button",{
+    style:"flex:1;border:none;border-radius:10px;padding:10px;background:"+C.border+"99;color:"+C.ink+";font-weight:700;font-size:12px;",
+    onClick:function(){ state.form = { coin:c }; setState({modal:"detail"}); }
+  },"評分細節"));
+  if(c.url) actions.appendChild(el("a",{ href:c.url, target:"_blank", rel:"noopener noreferrer",
+    style:"flex:1;border-radius:10px;padding:10px;background:"+C.border+"99;color:"+C.ink+";font-weight:700;font-size:12px;text-align:center;text-decoration:none;" },"看 K 線"));
+  actions.appendChild(el("button",{
+    style:"flex:1;border:none;border-radius:10px;padding:10px;background:"+(c.flags.length?C.border:C.indigo)+";color:"+(c.flags.length?C.sub:"#fff")+";font-weight:700;font-size:12px;",
+    onClick:function(){ openEntry(c); }
+  }, c.flags.length ? "已封鎖" : "模擬買入"));
+  card.appendChild(actions);
+  return card;
+}
+
+/* ---------- 風控頁 ---------- */
+function renderRisk(){
+  var c = state.data.config, sz = positionSize(), box = el("div");
+  var lossLimit = c.bankroll * c.dailyLossPct/100;
+  var today = realizedToday();
+  var stopped = today <= -lossLimit;
+
+  box.appendChild(el("div",{class:"card",style:"margin-bottom:12px;background:linear-gradient(135deg,"+C.indigoDark+","+C.indigo+");color:#fff;"},
+    el("div",{style:"font-size:11px;opacity:0.8;"},"每筆該投多少"),
+    el("div",{style:"font-size:30px;font-weight:800;margin:4px 0;"}, fmtUsd(sz.qtyUsd)),
+    el("div",{style:"font-size:11px;opacity:0.85;line-height:1.7;"},
+      "本金 " + fmtUsd(c.bankroll) + " × 單筆風險 " + c.riskPct + "% = 最多賠 " + fmtUsd(sz.riskUsd) + "，",
+      "停損 " + c.stopPct + "% 反推部位 " + fmtUsd(sz.rawQty) + "。",
+      sz.capped ? el("div",{style:"margin-top:6px;"}, "⚠️ 已被單一部位上限（本金 25% = " + fmtUsd(sz.cap) + "）壓下來。") : null)
+  ));
+
+  box.appendChild(el("div",{class:"card",style:"margin-bottom:12px;border:2px solid "+(stopped?C.red:C.border)+";"},
+    el("div",{style:"display:flex;justify-content:space-between;align-items:center;"},
+      el("div",null,
+        el("div",{style:"font-size:12px;font-weight:700;"}, stopped ? "🛑 今天停手" : "今日狀態"),
+        el("div",{style:"font-size:11px;color:"+C.sub+";margin-top:3px;"},
+          "已實現 " + fmtUsd(today) + " ／ 止血線 " + fmtUsd(-lossLimit))),
+      pill(openTrades().length + " / " + c.maxOpen + " 部位", openTrades().length >= c.maxOpen ? C.red : C.green)),
+    el("div",{class:"bar",style:"margin-top:10px;"},
+      el("div",{class:"bar-fill",style:"background:"+(stopped?C.red:C.amber)+";width:"+clamp(Math.abs(Math.min(today,0))/lossLimit*100, 0, 100)+"%;"}))
+  ));
+
+  box.appendChild(sectionTitle("參數設定"));
+  var form = el("div",{class:"card"});
+  [["bankroll","總本金（USD）","1000"],
+   ["riskPct","單筆風險 %（建議 1–2，超過 5 很快會歸零）","2"],
+   ["stopPct","預設停損 %","25"],
+   ["targetR","預設停利（幾倍風險）","2"],
+   ["maxOpen","同時最多幾個部位","3"],
+   ["dailyLossPct","單日虧損上限（本金 %）","6"],
+   ["minLiq","流動性門檻（USD，低於此直接封鎖）","30000"],
+   ["slipPct","單邊摩擦成本 %（手續費＋滑價）","1.5"]
+  ].forEach(function(row){
+    form.appendChild(label(row[1]));
+    form.appendChild(numberField(row[0], row[2], c));
+  });
+  form.appendChild(el("button",{
+    style:"width:100%;border:none;border-radius:10px;padding:12px;background:"+C.indigo+";color:#fff;font-weight:700;",
+    onClick:function(){
+      c.bankroll = Math.max(num(c.bankroll), 1);
+      c.riskPct = clamp(num(c.riskPct), 0.1, 20);
+      c.stopPct = clamp(num(c.stopPct), 1, 90);
+      c.targetR = clamp(num(c.targetR), 0.5, 20);
+      c.maxOpen = clamp(Math.round(num(c.maxOpen)), 1, 20);
+      c.dailyLossPct = clamp(num(c.dailyLossPct), 0.5, 50);
+      c.minLiq = Math.max(num(c.minLiq), 0);
+      c.slipPct = clamp(num(c.slipPct), 0, 20);
+      persist(); flash("已儲存");
+    }},"儲存設定"));
+  box.appendChild(form);
+
+  box.appendChild(el("div",{style:"font-size:11px;color:"+C.sub+";line-height:1.8;margin-top:12px;padding:0 2px;"},
+    "為什麼單筆風險要壓在 1–2%：連虧 10 筆是迷因幣的日常。單筆 2% 連虧 10 次剩 82% 本金，還能翻身；單筆 20% 連虧 10 次剩 10%，就結束了。"));
+  return box;
+}
+
+/* ---------- 模擬倉頁 ---------- */
+function renderPaper(){
+  var box = el("div"), s = stats(), gate = realMoneyGate(), open = openTrades();
+
+  var gateCard = el("div",{class:"card",style:"margin-bottom:12px;border:2px solid "+(gate.pass?C.green:C.amber)+";"});
+  gateCard.appendChild(el("div",{style:"font-weight:700;font-size:13px;margin-bottom:8px;"},
+    gate.pass ? "✅ 通過門檻，可以考慮小額上真錢" : "⏳ 還沒通過門檻，先別碰真錢"));
+  gate.checks.forEach(function(ck){
+    gateCard.appendChild(el("div",{style:"display:flex;justify-content:space-between;font-size:12px;padding:4px 0;"},
+      el("span",{style:"color:"+(ck.ok?C.green:C.sub)+";"}, (ck.ok?"✓ ":"○ ") + ck.label),
+      el("span",{style:"font-weight:700;color:"+(ck.ok?C.green:C.ink)+";"}, ck.now)));
+  });
+  box.appendChild(gateCard);
+
+  if(s.n){
+    var grid = el("div",{style:"display:flex;flex-wrap:wrap;gap:8px;margin-bottom:12px;"});
+    [["勝率",(s.winRate*100).toFixed(0)+"%",C.ink],
+     ["期望值",s.expectancy.toFixed(2)+"R",s.expectancy>0?C.green:C.red],
+     ["獲利因子",s.profitFactor.toFixed(2),s.profitFactor>1?C.green:C.red],
+     ["平均賺",s.avgWinR.toFixed(2)+"R",C.green],
+     ["平均賠",s.avgLossR.toFixed(2)+"R",C.red],
+     ["最大連虧",s.worstStreak+" 筆",C.amber]
+    ].forEach(function(x){
+      grid.appendChild(el("div",{class:"card",style:"flex:1 1 30%;min-width:96px;padding:12px;text-align:center;"},
+        el("div",{style:"font-size:10px;color:"+C.sub+";"}, x[0]),
+        el("div",{style:"font-size:16px;font-weight:800;color:"+x[2]+";margin-top:2px;"}, x[1])));
+    });
+    box.appendChild(grid);
+    if(s.expectancy <= 0){
+      box.appendChild(el("div",{style:"background:"+C.red+"14;color:"+C.red+";border-radius:12px;padding:12px;font-size:12px;line-height:1.7;margin-bottom:12px;"},
+        "期望值是負的：目前這套打法每下一注就是在丟錢。真錢上去只會虧更快，先改規則再說。"));
+    }
+  }
+
+  box.appendChild(el("div",{style:"display:flex;gap:8px;margin-bottom:4px;"},
+    el("button",{style:"flex:1;border:none;border-radius:10px;padding:11px;background:"+C.blue+";color:#fff;font-weight:700;font-size:12px;",onClick:refreshPrices},"更新報價"),
+    el("button",{style:"flex:1;border:none;border-radius:10px;padding:11px;background:"+C.border+"99;color:"+C.ink+";font-weight:700;font-size:12px;",onClick:function(){ state.form = {}; setState({modal:"entry"}); }},"手動建倉"),
+    el("button",{style:"flex:1;border:none;border-radius:10px;padding:11px;background:"+C.border+"99;color:"+C.ink+";font-weight:700;font-size:12px;",onClick:exportData},"匯出")));
+
+  box.appendChild(sectionTitle("持倉中（" + open.length + "）"));
+  if(!open.length) box.appendChild(el("div",{class:"card",style:"font-size:12px;color:"+C.sub+";"},"沒有持倉。去掃描頁挑一顆，或用「手動建倉」自己輸入。"));
+  open.forEach(function(t){
+    var u = unrealized(t);
+    var col = u.pnl >= 0 ? C.green : C.red;
+    box.appendChild(el("div",{class:"card",style:"margin-bottom:10px;border-left:4px solid "+col+";"},
+      el("div",{style:"display:flex;justify-content:space-between;align-items:center;"},
+        el("div",null,
+          el("div",{style:"font-weight:700;font-size:14px;"}, t.symbol, " ", u.hitStop ? pill("該停損了", C.red) : u.hitTarget ? pill("到目標價", C.green) : null),
+          el("div",{style:"font-size:11px;color:"+C.sub+";margin-top:3px;"},
+            "部位 " + fmtUsd(t.qtyUsd) + " ｜ 進 " + fmtPrice(t.entry) + " ｜ 現 " + fmtPrice(t.lastPrice))),
+        el("div",{style:"text-align:right;"},
+          el("div",{style:"font-size:16px;font-weight:800;color:"+col+";"}, (u.pnl>=0?"+":"-") + fmtUsd(Math.abs(u.pnl))),
+          el("div",{style:"font-size:11px;color:"+col+";"}, u.r.toFixed(2) + "R"))),
+      el("div",{style:"font-size:11px;color:"+C.sub+";margin:8px 0;"},
+        "停損 " + fmtPrice(t.stopPrice) + " ｜ 目標 " + fmtPrice(t.targetPrice) + " ｜ 風險 " + fmtUsd(t.riskUsd)),
+      el("button",{style:"width:100%;border:none;border-radius:10px;padding:10px;background:"+C.ink+";color:#fff;font-weight:700;font-size:12px;",
+        onClick:function(){ state.form = { id:t.id, exitPrice:t.lastPrice, closeReason: u.hitStop ? "停損" : u.hitTarget ? "停利" : "手動" }; setState({modal:"close"}); }},"平倉")));
+  });
+
+  var closed = closedTrades();
+  if(closed.length){
+    box.appendChild(sectionTitle("已平倉（" + closed.length + "）"));
+    closed.slice(0, 30).forEach(function(t){
+      var col = num(t.pnlUsd) >= 0 ? C.green : C.red;
+      box.appendChild(el("div",{class:"card",style:"margin-bottom:8px;padding:12px;display:flex;justify-content:space-between;align-items:center;"},
+        el("div",null,
+          el("div",{style:"font-weight:700;font-size:13px;"}, t.symbol + " · " + (t.closeReason || "手動")),
+          el("div",{style:"font-size:11px;color:"+C.sub+";margin-top:2px;"}, t.closedAt.slice(0,10) + " ｜ " + fmtPrice(t.entry) + " → " + fmtPrice(t.exit))),
+        el("div",{style:"text-align:right;"},
+          el("div",{style:"font-weight:800;color:"+col+";"}, (num(t.pnlUsd)>=0?"+":"-") + fmtUsd(Math.abs(num(t.pnlUsd)))),
+          el("div",{style:"font-size:11px;color:"+col+";"}, num(t.r).toFixed(2) + "R"))));
+    });
+  }
+  return box;
+}
+
+/* ---------- 規則頁 ---------- */
+function renderRules(){
+  var c = state.data.config, box = el("div");
+
+  box.appendChild(el("div",{class:"card",style:"margin-bottom:12px;background:"+C.red+"0F;border:1px solid "+C.red+"33;"},
+    el("div",{style:"font-weight:700;font-size:13px;color:"+C.red+";margin-bottom:8px;"},"先看懂你在玩什麼"),
+    el("div",{style:"font-size:12px;line-height:1.9;color:"+C.ink+";"},
+      "· 絕大多數迷因幣最終歸零，這是結構性的，不是你選得不夠好。", el("br"),
+      "· 你的對手是能在同一個區塊內搶先成交的機器人，和在發幣前就拿到籌碼的錢包。", el("br"),
+      "· 每次進出至少吃掉 " + (c.slipPct*2).toFixed(1) + "% 的手續費與滑價。要打平，你的勝率得先扛過這個摩擦。", el("br"),
+      "· 這支程式不下單、不碰你的私鑰、不會替你決定買什麼。它只做過濾和紀律。")));
+
+  box.appendChild(sectionTitle("唯一可以程式化的優勢"));
+  box.appendChild(el("div",{class:"card",style:"font-size:12px;line-height:1.9;color:"+C.ink+";"},
+    el("b",null,"1. 過濾"), "：流動性太淺、FDV 灌水、零賣單、洗量——這些用數字就能判斷，不需要直覺。", el("br"),
+    el("b",null,"2. 部位"), "：不管多有把握，每筆都只賭同樣的風險金額。這是唯一能讓你在連虧之後還活著的東西。", el("br"),
+    el("b",null,"3. 停損"), "：進場前就決定出場價，並且真的執行。虧損上限固定，獲利才有機會拉長。", el("br"),
+    el("b",null,"4. 記錄"), "：跑滿 30 筆，看期望值是正是負。負的就承認這套不行，不要加碼凹單。"));
+
+  box.appendChild(sectionTitle("每次進場前的紀律清單"));
+  var ckCard = el("div",{class:"card",style:"font-size:12px;line-height:2;"});
+  CHECKLIST.forEach(function(t){ ckCard.appendChild(el("div",null,"☐ " + t)); });
+  box.appendChild(ckCard);
+
+  box.appendChild(sectionTitle("期望值怎麼看"));
+  box.appendChild(el("div",{class:"card",style:"font-size:12px;line-height:1.9;color:"+C.ink+";"},
+    "期望值 = 勝率 × 平均賺(R) + 敗率 × 平均賠(R)。", el("br"),
+    "以 " + c.stopPct + "% 停損、" + c.targetR + " 倍停利為例，勝率只要超過 " +
+      (100/(1 + c.targetR)).toFixed(0) + "% 就是正期望值——但摩擦成本會把這個門檻再往上推。", el("br"), el("br"),
+    el("span",{style:"color:"+C.sub+";"},"所有資料只存在這台裝置的 localStorage。清瀏覽器資料就會消失，記得用模擬倉頁的「匯出」留備份。")));
+
+  box.appendChild(el("button",{
+    style:"width:100%;border:none;border-radius:12px;padding:13px;background:"+C.border+"99;color:"+C.red+";font-weight:700;font-size:12px;margin-top:16px;",
+    onClick:function(){
+      if(confirm("清空所有模擬交易紀錄？這無法復原。")){ state.data.trades = []; persist(); flash("已清空"); }
+    }},"清空模擬交易紀錄"));
+  return box;
+}
+
+/* ---------- 彈窗 ---------- */
+function closeModal(){ state.modal = null; state.form = {}; render(); }
+
+function modalShell(title){
+  var content = Array.prototype.slice.call(arguments, 1);
+  var bg = el("div",{ class:"modal-bg", onClick:closeModal });
+  var args = [{ class:"modal-box", onClick:function(e){ e.stopPropagation(); } },
+    el("div",{style:"width:36px;height:4px;background:"+C.border+";border-radius:2px;margin:0 auto 16px;"}),
+    el("h3",{style:"font-size:16px;font-weight:700;margin:0 0 16px;"}, title)].concat(content);
+  bg.appendChild(el.apply(null, ["div"].concat(args)));
+  return bg;
+}
+
+function openEntry(c){
+  var b = blockers(c);
+  if(b.length){ flash(b[0], 5000); return; }
+  state.form = {
+    symbol:c.symbol, chainId:c.chainId, pairAddress:c.pairAddress, url:c.url, score:c.score,
+    price:c.price, stopPct:state.data.config.stopPct, targetR:state.data.config.targetR
+  };
+  setState({ modal:"entry" });
+}
+
+function renderEntryModal(){
+  var f = state.form, c = state.data.config, sz = positionSize();
+  var b = blockers(null);
+  var stopPct = clamp(num(f.stopPct) || c.stopPct, 1, 90);
+  var targetR = clamp(num(f.targetR) || c.targetR, 0.5, 20);
+  var entry = num(f.price) * (1 + c.slipPct/100);
+
+  var symbolInput = el("input",{ class:"input", type:"text", placeholder:"例：PEPE", value:f.symbol || "" });
+  symbolInput.addEventListener("input", function(e){ f.symbol = e.target.value; });
+
+  var ckBox = el("div",{style:"margin-bottom:12px;"});
+  CHECKLIST.forEach(function(t, i){
+    var on = !!f["ck" + i];
+    ckBox.appendChild(el("button",{
+      style:"width:100%;text-align:left;border:1.5px solid "+(on?C.green:C.border)+";background:"+(on?C.green+"12":"#fff")+";color:"+(on?C.ink:C.sub)+";border-radius:10px;padding:10px 12px;font-size:12px;margin-bottom:6px;line-height:1.5;",
+      onClick:function(){ f["ck" + i] = !on; render(); }
+    }, (on ? "☑ " : "☐ ") + t));
+  });
+
+  return modalShell("模擬買入" + (f.symbol ? " · " + f.symbol : ""),
+    b.length ? el("div",{style:"background:"+C.red+"14;color:"+C.red+";border-radius:10px;padding:10px 12px;font-size:12px;line-height:1.7;margin-bottom:12px;"},
+      b.map(function(x){ return el("div",null,"🚫 " + x); })) : null,
+    label("代幣"), symbolInput,
+    label("進場價（USD）"), numberField("price","0", f, render),
+    label("停損 %"), numberField("stopPct", String(c.stopPct), f, render),
+    label("停利 = 幾倍風險"), numberField("targetR", String(c.targetR), f, render),
+    el("div",{style:"background:"+C.bg+";border-radius:12px;padding:12px;font-size:12px;line-height:1.9;margin-bottom:14px;"},
+      el("div",null, "部位大小　", el("b",null, fmtUsd(sz.qtyUsd))),
+      el("div",null, "最多賠　　", el("b",{style:"color:"+C.red+";"}, fmtUsd(sz.qtyUsd*stopPct/100))),
+      el("div",null, "含摩擦進場價　", el("b",null, fmtPrice(entry))),
+      el("div",null, "停損價　", el("b",{style:"color:"+C.red+";"}, fmtPrice(entry*(1-stopPct/100)))),
+      el("div",null, "目標價　", el("b",{style:"color:"+C.green+";"}, fmtPrice(entry*(1+stopPct/100*targetR))))),
+    label("紀律清單（全部勾選才能建倉）"), ckBox,
+    el("button",{
+      style:"width:100%;border:none;border-radius:12px;padding:13px;background:"+(b.length?C.sub:C.indigo)+";color:#fff;font-weight:700;",
+      onClick:function(){ if(b.length){ flash(b[0], 5000); return; } openPaper(); }
+    },"建立模擬部位"));
+}
+
+function renderCloseModal(){
+  var f = state.form;
+  var t = state.data.trades.filter(function(x){ return x.id === f.id; })[0];
+  if(!t) return el("div");
+  var exit = num(f.exitPrice) * (1 - state.data.config.slipPct/100);
+  var pnl = t.qtyUsd * (exit/t.entry - 1);
+  var r = t.riskUsd > 0 ? pnl/t.riskUsd : 0;
+  var col = pnl >= 0 ? C.green : C.red;
+
+  var reasons = el("div",{style:"display:flex;gap:6px;margin-bottom:12px;"});
+  ["停損","停利","手動","歸零"].forEach(function(rs){
+    var on = f.closeReason === rs;
+    reasons.appendChild(el("button",{
+      style:"flex:1;border:1.5px solid "+(on?C.indigo:C.border)+";background:"+(on?C.indigo+"12":"#fff")+";color:"+(on?C.indigoDark:C.sub)+";border-radius:10px;padding:9px 0;font-size:12px;font-weight:600;",
+      onClick:function(){ f.closeReason = rs; if(rs === "歸零") f.exitPrice = 0.0000000001; render(); }
+    }, rs));
+  });
+
+  return modalShell("平倉 · " + t.symbol,
+    label("出場價（USD）"), numberField("exitPrice","0", f, render),
+    label("出場原因"), reasons,
+    el("div",{style:"background:"+C.bg+";border-radius:12px;padding:12px;font-size:13px;margin-bottom:14px;"},
+      el("div",{style:"color:"+C.sub+";font-size:11px;"},"扣掉 " + state.data.config.slipPct + "% 摩擦後的結果"),
+      el("div",{style:"font-size:22px;font-weight:800;color:"+col+";margin-top:4px;"},
+        (pnl>=0?"+":"-") + fmtUsd(Math.abs(pnl)) + "　" + r.toFixed(2) + "R")),
+    el("button",{style:"width:100%;border:none;border-radius:12px;padding:13px;background:"+C.ink+";color:#fff;font-weight:700;",onClick:closePaper},"確認平倉"));
+}
+
+function renderDetailModal(){
+  var c = state.form.coin;
+  if(!c) return el("div");
+  var rows = c.factors.map(function(x){
+    var pct = x.max > 0 ? x.s/x.max*100 : 0;
+    var col = pct >= 70 ? C.green : pct >= 40 ? C.amber : C.red;
+    return el("div",{style:"margin-bottom:10px;"},
+      el("div",{style:"display:flex;justify-content:space-between;font-size:12px;margin-bottom:4px;"},
+        el("span",null, x.k + "　", el("span",{style:"color:"+C.sub+";"}, x.v)),
+        el("span",{style:"font-weight:700;color:"+col+";"}, x.s.toFixed(1) + " / " + x.max)),
+      el("div",{class:"bar"}, el("div",{class:"bar-fill",style:"background:"+col+";width:"+pct+"%;"})));
+  });
+
+  return modalShell(c.symbol + " 評分細節",
+    el("div",{style:"font-size:12px;color:"+C.sub+";margin-bottom:14px;line-height:1.7;"},
+      c.chainId + " · " + (c.dexId || "-") + " ｜ 上池 " + fmtAge(c.ageMin) + " ｜ FDV " + fmtUsd(c.fdv) + el("br")),
+    rows,
+    c.flags.length ? el("div",{style:"background:"+C.red+"14;border-radius:10px;padding:10px 12px;font-size:11px;color:"+C.red+";line-height:1.7;margin-top:12px;"},
+      el("div",{style:"font-weight:700;margin-bottom:4px;"},"紅旗（直接封鎖進場）"),
+      c.flags.map(function(x){ return el("div",null,"🚩 " + x); })) : null,
+    el("div",{style:"font-size:11px;color:"+C.sub+";line-height:1.7;margin-top:14px;"},
+      "分數高只代表「這個池子的結構比較不像陷阱」，不代表會漲。任何一顆都可能直接歸零。"),
+    el("button",{style:"width:100%;border:none;border-radius:12px;padding:13px;background:"+C.border+"99;color:"+C.ink+";font-weight:700;margin-top:14px;",onClick:closeModal},"關閉"));
+}
+
+render();
+</script>
+</body>
+</html>
