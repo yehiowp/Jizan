@@ -1,9 +1,11 @@
+import fs from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { config, validateConfig } from "./config.js";
 import { log } from "./log.js";
 import { createStore } from "./store.js";
 import { createCli, createBucket } from "./gmgncli.js";
+import { createBanFile } from "./banfile.js";
 import { createTrader } from "./trader.js";
 import { createRadar } from "./radar.js";
 import { createBot } from "./bot.js";
@@ -12,9 +14,32 @@ import { createAutoTrader } from "./autotrader.js";
 import { createNarrative } from "./narrative.js";
 import { createReconciler } from "./reconcile.js";
 import { createHeartbeat } from "./heartbeat.js";
+import { createSiblings } from "./siblings.js";
 
 const here = path.dirname(fileURLToPath(import.meta.url));
-const STATE_FILE = path.join(here, "..", "data", "state.json");
+const DATA_DIR = path.join(here, "..", "data");
+
+/* 每個實例一本自己的帳本。一條鏈一個機器人時，它們的部位、
+   風控上限、統計全部各自獨立。 */
+const STATE_FILE = path.join(DATA_DIR, `state-${config.instance}.json`);
+
+/* 限流封禁例外：這一份所有實例共用。
+   封的是同一把 API Key，各記各的話解封瞬間會有 N 個行程同時敲門，
+   每敲一次封禁延長 5 秒。 */
+const BAN_FILE = path.join(DATA_DIR, "rate-limit.json");
+
+/* 舊版把帳本寫在 data/state.json。第一次用新版時搬過來，
+   不然你的持倉和績效會看起來整個消失。 */
+function migrateLegacyState(){
+  const legacy = path.join(DATA_DIR, "state.json");
+  if(fs.existsSync(STATE_FILE) || !fs.existsSync(legacy)) return;
+  try {
+    fs.copyFileSync(legacy, STATE_FILE);
+    log.info("已把舊帳本搬到這個實例", { from: legacy, to: STATE_FILE });
+  } catch(e){
+    log.warn("舊帳本搬不過來，這個實例會從空的開始", { error: e.message });
+  }
+}
 
 async function main(){
   const v = validateConfig();
@@ -43,14 +68,17 @@ async function main(){
     });
   }
 
+  migrateLegacyState();
   const store = createStore(STATE_FILE);
+  const banFile = createBanFile(BAN_FILE);
   /* 限流封禁跨行程記住：封的是 API Key，重啟不會解除。
      忘記它的話，重啟後第一個請求就會把封禁再延長 5 秒。 */
   const cli = createCli({
     minGapMs: config.timing.minRequestGapMs,
     bucket: createBucket({
-      initialBanUntil: store.rateLimitBanUntil(),
-      onBan: until => store.setRateLimitBan(until),
+      /* 兩邊都讀：共用檔是跨機器人的，store 那份是這個實例自己的歷史記錄 */
+      initialBanUntil: Math.max(banFile.read(), store.rateLimitBanUntil()),
+      onBan: until => { store.setRateLimitBan(until); banFile.write(until); },
     }),
   });
   const bannedMs = cli.bucket.bannedForMs();
@@ -74,7 +102,8 @@ async function main(){
   }
 
   const trader = createTrader({ cli, store, radar });
-  const botApi = createBot({ cli, store, trader });
+  const siblings = createSiblings({ dataDir: DATA_DIR, self: config.instance });
+  const botApi = createBot({ cli, store, trader, siblings });
   const { say } = botApi;
   const reconciler = createReconciler({ cli, store, trader, say });
   const monitor = createMonitor({ store, trader, say, reconciler });
@@ -106,6 +135,8 @@ async function main(){
   if(config.mode.autoBuy) autoTrader.start();
 
   log.info("機器人啟動", {
+    instance: config.instance,
+    stateFile: path.basename(STATE_FILE),
     mode: config.mode.dryRun ? "DRY_RUN" : "LIVE",
     autoBuy: config.mode.autoBuy,
     chain: config.gmgn.chain,

@@ -19,7 +19,10 @@ $ErrorActionPreference = "Stop"
 # 切到 bot 資料夾（這個腳本在 bot\scripts\ 底下）
 Set-Location (Split-Path -Parent $PSScriptRoot)
 
-$Log = Join-Path $HOME "gmgn-bot.log"
+# 一條鏈一個機器人時，每個實例要有自己的紀錄檔 ——
+# 共用一個檔的話，9 個行程同時往裡面寫，行與行會交錯在一起，出事了沒辦法讀。
+$Instance = if ($env:INSTANCE) { $env:INSTANCE } elseif ($env:CHAIN) { $env:CHAIN } else { "" }
+$Log = if ($Instance) { Join-Path $HOME "gmgn-bot-$Instance.log" } else { Join-Path $HOME "gmgn-bot.log" }
 $MaxBytes = 5MB
 
 # 紀錄檔用「帶 BOM 的 UTF-8」寫。兩個理由：

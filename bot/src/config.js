@@ -51,15 +51,52 @@ export const CURRENCY = {
     antiMev: true,
     tradable: true
   },
+  /* ── 以下是「只掃不下單」的鏈 ──
+
+     官方 Chain Currencies 表只列了 sol / bsc / base / eth 四條鏈的幣種地址。
+     下單需要 --input-token，而文件自己寫著「永遠不要靠記憶或訓練資料猜地址」——
+     猜錯的後果是靜默失敗或 no route，而且不會有明確的錯誤告訴你原因。
+     所以這幾條鏈掃描、評分、安全檢查全部照常，只有下單這一步擋住。
+
+     arc 和 stable 雖然在 swap 的 --chain 允許值裡，但幣種表沒有列它們的地址，
+     所以一樣不下單 —— 「指令接受這條鏈」跟「我知道要填哪個 input-token」是兩件事。 */
   robinhood: {
-    /* 官方 Chain Currencies 表沒有這條鏈的幣種地址。掃描與安全檢查照常，
-       但下單需要 --input-token，沒有可靠地址就不下單。 */
-    feeStyle: "unknown",
-    antiMev: false,
-    tradable: false,
+    feeStyle: "unknown", antiMev: false, tradable: false,
     untradableReason: "官方幣種表沒有列 robinhood 的幣種地址，沒有可靠的 --input-token 就不下單"
+  },
+  arc: {
+    feeStyle: "unknown", antiMev: false, tradable: false,
+    untradableReason: "官方幣種表沒有列 arc 的幣種地址，沒有可靠的 --input-token 就不下單"
+  },
+  stable: {
+    feeStyle: "unknown", antiMev: false, tradable: false,
+    untradableReason: "官方幣種表沒有列 stable 的幣種地址，沒有可靠的 --input-token 就不下單"
+  },
+  arbitrum: {
+    feeStyle: "unknown", antiMev: false, tradable: false,
+    untradableReason: "swap 的 --chain 沒有列 arbitrum，這條鏈只能掃描"
+  },
+  hyperevm: {
+    feeStyle: "unknown", antiMev: false, tradable: false,
+    untradableReason: "swap 的 --chain 沒有列 hyperevm，這條鏈只能掃描"
   }
 };
+
+/* 可以掃描的鏈：CURRENCY 表裡的全部。
+   CHAINS=all 會展開成這個清單。 */
+export const SCANNABLE_CHAINS = Object.keys(CURRENCY);
+
+/* 可以下單的鏈 —— 只有幣種地址查得到的那幾條 */
+export const TRADABLE_CHAINS = SCANNABLE_CHAINS.filter(c => CURRENCY[c].tradable);
+
+/* CHAINS 的值展開成實際要掃的清單。
+   "all" = 每一條；不認得的鏈直接丟掉（而不是拿去打 API 撞一鼻子灰）。 */
+export function expandChains(raw, fallback = "sol"){
+  const parts = String(raw ?? "").split(",").map(x => x.trim().toLowerCase()).filter(Boolean);
+  if(parts.includes("all")) return [...SCANNABLE_CHAINS];
+  const known = parts.filter(c => SCANNABLE_CHAINS.includes(c));
+  return known.length ? known : (SCANNABLE_CHAINS.includes(fallback) ? [fallback] : ["sol"]);
+}
 
 /* 這條鏈能不能下單 */
 export function chainTradable(chain){
@@ -70,8 +107,17 @@ export function chainTradable(chain){
 }
 
 export const config = {
+  /* 實例名稱。一條鏈一個機器人時，用它把帳本、紀錄、Telegram 分開。
+     預設取 CHAIN，所以 CHAIN=bsc 的那個機器人自然就叫 bsc。 */
+  instance: str("INSTANCE", "") || str("CHAIN", "main"),
+
   telegram: {
-    token: str("TELEGRAM_TOKEN", ""),
+    /* 一條鏈一個機器人時，每個實例要有自己的 Telegram Token ——
+       Telegram 同一個 Token 只允許一個行程輪詢，兩個一起跑會互相把對方踢掉
+       （HTTP 409），而且症狀是「有時候收得到訊息、有時候收不到」。
+       找 TELEGRAM_TOKEN_<實例名大寫>，沒有就退回共用的 TELEGRAM_TOKEN。 */
+    token: str(`TELEGRAM_TOKEN_${(str("INSTANCE", "") || str("CHAIN", "main")).toUpperCase()}`, "")
+        || str("TELEGRAM_TOKEN", ""),
     ownerId: str("OWNER_ID", "")
   },
   gmgn: {
@@ -81,7 +127,9 @@ export const config = {
     chain: str("CHAIN", "sol"),
     /* 要掃描的鏈，逗號分隔。留空就只掃 CHAIN 那一條。
        多鏈只影響掃描範圍；風控上限（部位數、在場資金、單日虧損）仍然是全域共用的。 */
-    chains: str("CHAINS", "").split(",").map(x => x.trim()).filter(Boolean)
+    /* CHAINS=all 會掃每一條 GMGN 支援的鏈。留空就只掃 CHAIN 那一條。
+       不認得的鏈會被丟掉，不會拿去打 API。 */
+    chains: str("CHAINS", "") ? expandChains(str("CHAINS", ""), str("CHAIN", "sol")) : []
   },
   /* 本機 Meme 雷達（meme-radar）。設了就用它取候選，不再自己敲 GMGN 的熱門榜。
      它只縮小名單，不核可任何一顆幣 —— 買不買仍然由機器人自己 vet() 之後的閘門決定。 */
@@ -202,6 +250,21 @@ export function validateConfig(cfg = config){
     if(!cfg.mode.dryRun){
       warnings.push("自動交易 + 真錢模式：機器人會在你沒看螢幕的時候用自己的判斷花錢");
     }
+  }
+
+  /* 掃很多鏈而且沒接雷達 = 每輪對 GMGN 的請求數乘以鏈數。
+     這是被限流最直接的來源，而限流的症狀是「安靜地什麼都沒買」。 */
+  const chainCount = (cfg.gmgn.chains.length ? cfg.gmgn.chains : [cfg.gmgn.chain]).length;
+  if(chainCount > 3 && !cfg.radar.url){
+    warnings.push(`掃 ${chainCount} 條鏈但沒接雷達：每輪請求數是單鏈的 ${chainCount} 倍，很容易被 GMGN 限流。`
+      + " 建議設 RADAR_URL，或把 SCAN_INTERVAL_SEC 拉長。");
+  }
+
+  /* 只能掃不能下單的鏈，要講出來 —— 不然你會以為它在幫你交易那幾條鏈 */
+  const scanOnly = (cfg.gmgn.chains.length ? cfg.gmgn.chains : [cfg.gmgn.chain])
+    .filter(c => CURRENCY[c] && !CURRENCY[c].tradable);
+  if(scanOnly.length){
+    warnings.push(`這些鏈只掃描不下單（官方幣種表沒有它們的幣種地址）：${scanOnly.join(" / ")}`);
   }
 
   return { ok: errors.length === 0, errors, warnings };

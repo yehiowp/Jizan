@@ -1,5 +1,6 @@
 import fs from "node:fs";
 import path from "node:path";
+import { withLock } from "./lock.js";
 
 const DEFAULT_STATE = {
   version: 1,
@@ -15,7 +16,17 @@ const DEFAULT_STATE = {
   autoBuys: {}     // "YYYY-MM-DD" -> { count, spentUsd }
 };
 
-export function createStore(filePath){
+/* shared: true 時，每次寫入都會「拿鎖 → 重讀 → 改 → 寫回」。
+
+   為什麼非這樣不可：一條鏈一個機器人的話，好幾個行程共用同一個 state.json。
+   各自把記憶體裡的 state 整份寫回去，就是典型的讀-改-寫競態 ——
+   A 讀到 2 個部位、B 也讀到 2 個，兩邊各加一筆再寫回，
+   最後檔案裡只有 3 筆，有一筆憑空消失。
+   消失的那筆是真的買了的幣：鏈上有、帳本沒有，風控看不到它，
+   監控也不會去管它的停損停利。
+
+   代價是每次寫入多一次磁碟往返。交易事件本來就不密集，這個代價可以忽略。 */
+export function createStore(filePath, { shared = false, lockDir = `${filePath}.lock` } = {}){
   const dir = path.dirname(filePath);
   let state;
 
@@ -54,66 +65,102 @@ export function createStore(filePath){
     fs.renameSync(tmp, filePath);   // 原子寫入，避免斷電留下半個檔案
   }
 
+  /* 共用模式下的寫入：拿鎖 → 重讀（吃進別的機器人剛寫的東西）→ 改 → 寫回。
+     fn 收到的是剛從磁碟讀回來的 state，所以它看到的一定是最新的。 */
+  function mutate(fn){
+    if(!shared){
+      const r = fn(state);
+      save();
+      return r;
+    }
+    return withLock(lockDir, () => {
+      state = load();
+      const r = fn(state);
+      save();
+      return r;
+    });
+  }
+
+  /* 共用模式下的讀取：檔案變了就重讀。
+     不重讀的話，這個機器人會拿別人五分鐘前的帳本在算風控。 */
+  let lastMtimeMs = 0;
+  function fresh(){
+    if(!shared) return state;
+    try {
+      const m = fs.statSync(filePath).mtimeMs;
+      if(m !== lastMtimeMs){ state = load(); lastMtimeMs = m; }
+    } catch { /* 檔案還不存在，用記憶體裡的 */ }
+    return state;
+  }
+
   state = load();
 
   return {
-    get state(){ return state; },
+    get state(){ return fresh(); },
     save,
     reload(){ state = load(); return state; },
+    shared,
 
-    openPositions(){ return state.positions; },
-    closedTrades(){ return state.trades; },
+    openPositions(){ return fresh().positions; },
+    closedTrades(){ return fresh().trades; },
 
-    addPosition(pos){ state.positions.unshift(pos); save(); return pos; },
-    getPosition(id){ return state.positions.find(p => p.id === id); },
+    addPosition(pos){ return mutate(st => { st.positions.unshift(pos); return pos; }); },
+    getPosition(id){ return fresh().positions.find(p => p.id === id); },
     removePosition(id){
-      const i = state.positions.findIndex(p => p.id === id);
-      if(i >= 0) state.positions.splice(i, 1);
-      save();
+      mutate(st => {
+        const i = st.positions.findIndex(p => p.id === id);
+        if(i >= 0) st.positions.splice(i, 1);
+      });
     },
     updatePosition(id, patch){
-      const p = state.positions.find(x => x.id === id);
-      if(p){ Object.assign(p, patch); save(); }
-      return p;
+      return mutate(st => {
+        const p = st.positions.find(x => x.id === id);
+        if(p) Object.assign(p, patch);
+        return p;
+      });
     },
 
     recordTrade(trade){
-      state.trades.unshift(trade);
-      const day = trade.closedAt.slice(0, 10);
-      state.daily[day] = (state.daily[day] || 0) + (trade.pnlUsd || 0);
-      save();
-      return trade;
+      return mutate(st => {
+        st.trades.unshift(trade);
+        const day = trade.closedAt.slice(0, 10);
+        st.daily[day] = (st.daily[day] || 0) + (trade.pnlUsd || 0);
+        return trade;
+      });
     },
 
+    /* 這三個是風控的輸入。共用模式下一定要讀磁碟上的最新值 ——
+       拿自己記憶體裡那份算，等於每個機器人都以為自己是唯一在花錢的。 */
     realizedToday(today = new Date().toISOString().slice(0, 10)){
-      return state.daily[today] || 0;
+      return fresh().daily[today] || 0;
     },
     realizedTotal(){
-      return state.trades.reduce((s, t) => s + (t.pnlUsd || 0), 0);
+      return fresh().trades.reduce((s, t) => s + (t.pnlUsd || 0), 0);
     },
     deployedUsd(){
-      return state.positions.reduce((s, p) => s + (p.costUsd || 0), 0);
+      return fresh().positions.reduce((s, p) => s + (p.costUsd || 0), 0);
     },
 
     pruneSeen: () => pruneSeen(state),
     seenCount: () => Object.keys(state.seen ?? {}).length,
 
     markSeen(addr){
-      state.seen[addr] = Date.now();
-      /* 順手清一次，不讓它累積到下次啟動 */
-      if(Object.keys(state.seen).length > 500) pruneSeen(state);
-      save();
+      mutate(st => {
+        st.seen[addr] = Date.now();
+        /* 順手清一次，不讓它累積到下次啟動 */
+        if(Object.keys(st.seen).length > 500) pruneSeen(st);
+      });
     },
 
     /* 驗過但沒過閘的幣，短時間內不要重驗 —— 省往返也省限流額度。
        冷卻比通知冷卻短很多，因為盤況真的會在十幾分鐘內改變。 */
-    markRejected(addr){ state.seen[`rej:${addr}`] = Date.now(); save(); },
+    markRejected(addr){ mutate(st => { st.seen[`rej:${addr}`] = Date.now(); }); },
     wasRejected(addr, withinMs = 15 * 60 * 1000){
-      const t = state.seen[`rej:${addr}`];
+      const t = fresh().seen[`rej:${addr}`];
       return t != null && Date.now() - t < withinMs;
     },
     wasSeen(addr, withinMs = 6 * 3600 * 1000){
-      const t = state.seen[addr];
+      const t = fresh().seen[addr];
       return t != null && Date.now() - t < withinMs;
     },
 

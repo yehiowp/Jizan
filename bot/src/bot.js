@@ -10,7 +10,7 @@ const PLAN_TTL_MS = 120000;   // 報價會過期，確認鈕不能無限期有�
 const usd = n => `$${Number(n ?? 0).toFixed(2)}`;
 const pct = n => `${Number(n ?? 0) >= 0 ? "+" : ""}${Number(n ?? 0).toFixed(1)}%`;
 
-export function createBot({ cli, store, trader, cfg = config }){
+export function createBot({ cli, store, trader, cfg = config, siblings = null }){
   const bot = new TelegramBot(cfg.telegram.token, { polling: true });
   const owner = String(cfg.telegram.ownerId);
   const pendingPlans = new Map();
@@ -44,6 +44,27 @@ export function createBot({ cli, store, trader, cfg = config }){
     pendingPlans.set(id, { plan, expiresAt: Date.now() + PLAN_TTL_MS });
     setTimeout(() => pendingPlans.delete(id), PLAN_TTL_MS + 1000).unref?.();
     return id;
+  }
+
+  /* 各自獨立帳本的代價：每個機器人的風控只看得到自己。
+     這幾行不改變任何判斷，只是把總曝險攤出來 —— 不然沒有任何一個地方看得到。 */
+  function siblingLines(){
+    if(!siblings) return [];
+    const rows = siblings.all();
+    if(rows.length <= 1) return [];
+    const t = siblings.totals();
+    const detail = rows.map(r => r.ok
+      ? `${r.isSelf ? "▸" : " "} ${r.name}：${r.openCount} 倉 ${usd(r.deployedUsd)}`
+        + `${r.autoArmed ? " 🤖" : ""}${r.tradingEnabled ? "" : " ⛔"}`
+      : `  ${r.name}：帳本讀不到`);
+    return [
+      "",
+      `全部 ${t.instances} 個機器人　合計 ${t.openCount} 倉　在場 ${usd(t.deployedUsd)}`
+        + `　今日 ${usd(t.realizedToday)}`
+        + (t.unknown ? `　（${t.unknown} 個讀不到，沒算進去）` : ""),
+      ...detail,
+      "⚠️ 風控上限是每個機器人各算各的，合計數字沒有任何上限在擋。",
+    ];
   }
 
   function modeLine(){
@@ -140,6 +161,7 @@ export function createBot({ cli, store, trader, cfg = config }){
         `交易開關：${store.state.tradingEnabled ? "開啟" : `停用（${store.state.disabledReason}）`}`,
         `GMGN CLI：${cfgCheck.ok ? "已設定" : `未通過（${cfgCheck.error ?? ""}）`}`,
         `候選來源：${cfg.radar.url ? `本機雷達 ${cfg.radar.url}` : "GMGN 熱門榜"}`,
+        ...siblingLines(),
         "",
         `持倉 ${open.length}/${cfg.risk.maxOpenPositions}　在場資金 ${usd(store.deployedUsd())}/${usd(cfg.risk.maxDeployedUsd)}`,
         `今日已實現 ${usd(store.realizedToday())}　（上限 ${usd(-cfg.risk.maxDailyLossUsd)}）`,

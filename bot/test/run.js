@@ -2112,6 +2112,121 @@ function freshStore(){
   assert("雷達給的資料不足時不進候選", thin.candidates.length === 0, String(thin.candidates.length));
 }
 
+/* ═══ 每條鏈一個機器人 ═══ */
+{
+  const { expandChains, SCANNABLE_CHAINS, TRADABLE_CHAINS, CURRENCY: CUR } =
+    await import("../src/config.js");
+  const { withLock, acquire, release } = await import("../src/lock.js");
+  const { createBanFile } = await import("../src/banfile.js");
+  const { createSiblings } = await import("../src/siblings.js");
+
+  /* ── 鏈清單 ── */
+  assert("all 展開成每一條可掃描的鏈",
+    expandChains("all").length === SCANNABLE_CHAINS.length, String(expandChains("all").length));
+  assert("不認得的鏈被丟掉", expandChains("sol,bogus").join(",") === "sol");
+  assert("全部都不認得就退回預設", expandChains("bogus,nope", "bsc").join(",") === "bsc");
+  assert("大小寫與空白容忍", expandChains(" SOL , Bsc ").join(",") === "sol,bsc");
+
+  /* 可下單的只有官方幣種表列出地址的那四條。
+     多一條都不行 —— 下單要填 --input-token，猜地址等於拿錢賭記憶力。 */
+  assert("可下單的鏈剛好是四條", TRADABLE_CHAINS.join(",") === "sol,bsc,base,eth", TRADABLE_CHAINS.join(","));
+  for(const c of ["robinhood", "arc", "stable", "arbitrum", "hyperevm"]){
+    assert(`${c} 可以掃但不可下單`,
+      SCANNABLE_CHAINS.includes(c) && CUR[c].tradable === false);
+    assert(`${c} 有說明為什麼不能下單`, typeof CUR[c].untradableReason === "string" && CUR[c].untradableReason.length > 0);
+  }
+  /* 不可下單的鏈不該留著幣種地址 —— 留著遲早會有人拿去用 */
+  for(const c of SCANNABLE_CHAINS){
+    if(!CUR[c].tradable) assert(`${c} 沒有幣種地址`, CUR[c].native === undefined);
+  }
+
+  /* ── 檔案鎖 ── */
+  const lockRoot = fs.mkdtempSync(path.join(os.tmpdir(), "gmgn-lock-"));
+  const lockDir = path.join(lockRoot, "x.lock");
+
+  assert("第一個拿得到鎖", acquire(lockDir) === true);
+  assert("第二個拿不到", acquire(lockDir) === false);
+  release(lockDir);
+  assert("解鎖後拿得到", acquire(lockDir) === true);
+  release(lockDir);
+
+  /* 死鎖（前一個行程當掉沒解鎖）要能搶過來，否則整組機器人會一起卡死 */
+  fs.mkdirSync(lockDir);
+  fs.writeFileSync(path.join(lockDir, "owner"), JSON.stringify({ pid: 999999, at: Date.now() - 60_000 }));
+  assert("逾時的死鎖搶得過來", acquire(lockDir, { staleMs: 30_000 }) === true);
+  release(lockDir);
+
+  /* 還活著的鎖不能搶 —— 誤判成死鎖會讓兩個行程同時寫 */
+  fs.mkdirSync(lockDir);
+  fs.writeFileSync(path.join(lockDir, "owner"), JSON.stringify({ pid: 1, at: Date.now() }));
+  assert("還活著的鎖不能搶", acquire(lockDir, { staleMs: 30_000 }) === false);
+  release(lockDir);
+
+  /* withLock 一定要解鎖，就算裡面丟錯 */
+  let boom = false;
+  try { withLock(lockDir, () => { throw new Error("x"); }); } catch { boom = true; }
+  assert("fn 丟錯也會解鎖", boom && acquire(lockDir) === true);
+  release(lockDir);
+
+  /* 拿不到鎖要丟錯，不能默默跳過 —— 沒寫進去跟寫錯一樣嚴重 */
+  fs.mkdirSync(lockDir);
+  fs.writeFileSync(path.join(lockDir, "owner"), JSON.stringify({ pid: 1, at: Date.now() }));
+  let timedOut = false;
+  try { withLock(lockDir, () => "never", { timeoutMs: 60, retryMs: 10 }); } catch { timedOut = true; }
+  assert("拿不到鎖會丟錯而不是默默跳過", timedOut);
+  release(lockDir);
+
+  /* ── 共用的限流封禁 ── */
+  const banPath = path.join(lockRoot, "rate-limit.json");
+  const banA = createBanFile(banPath);
+  const banB = createBanFile(banPath);   // 另一個機器人，同一個檔
+
+  assert("一開始沒有封禁", banA.read() === 0);
+  banA.write(50_000);
+  assert("另一個機器人讀得到", banB.read() === 50_000, String(banB.read()));
+  banB.write(30_000);
+  assert("比較早的時間不會把比較晚的洗掉", banA.read() === 50_000, String(banA.read()));
+  banB.write(90_000);
+  assert("比較晚的時間會延長", banA.read() === 90_000, String(banA.read()));
+
+  fs.writeFileSync(banPath, "不是 JSON");
+  assert("封禁檔壞掉時當成沒有封禁，不要炸掉", banA.read() === 0);
+
+  /* ── 跨機器人的曝險彙總 ── */
+  const dataDir = fs.mkdtempSync(path.join(os.tmpdir(), "gmgn-data-"));
+  const today = new Date().toISOString().slice(0, 10);
+  fs.writeFileSync(path.join(dataDir, "state-sol.json"), JSON.stringify({
+    positions: [{ costUsd: 20 }, { costUsd: 20 }], daily: { [today]: -5 },
+    tradingEnabled: true, auto: { armedUntil: Date.now() + 3600_000 },
+  }));
+  fs.writeFileSync(path.join(dataDir, "state-bsc.json"), JSON.stringify({
+    positions: [{ costUsd: 20 }], daily: { [today]: 3 }, tradingEnabled: false, auto: {},
+  }));
+  fs.writeFileSync(path.join(dataDir, "state-broken.json"), "{{{");
+  fs.writeFileSync(path.join(dataDir, "rate-limit.json"), JSON.stringify({ until: 1 }));
+
+  const sib = createSiblings({ dataDir, self: "sol" });
+  const rows = sib.all();
+  assert("只認 state-<名字>.json", rows.length === 3, JSON.stringify(rows.map(r => r.name)));
+  assert("認得出自己", rows.find(r => r.name === "sol").isSelf === true);
+  assert("壞掉的帳本標成讀不到，不是 0 倉",
+    rows.find(r => r.name === "broken").ok === false);
+
+  const tot = sib.totals();
+  assert("合計部位數", tot.openCount === 3, String(tot.openCount));
+  assert("合計在場資金", tot.deployedUsd === 60, String(tot.deployedUsd));
+  assert("合計今日損益", Math.abs(tot.realizedToday - (-2)) < 1e-9, String(tot.realizedToday));
+  assert("讀不到的另外算，不會被當成 0", tot.unknown === 1, String(tot.unknown));
+  assert("數得出幾個武裝中", tot.armed === 1, String(tot.armed));
+
+  /* 資料夾不存在也不能炸 —— 它只是報表，壞掉不該影響交易 */
+  const none = createSiblings({ dataDir: path.join(lockRoot, "nope"), self: "x" });
+  assert("資料夾不存在時回空陣列", none.all().length === 0 && none.totals().instances === 0);
+
+  fs.rmSync(lockRoot, { recursive: true, force: true });
+  fs.rmSync(dataDir, { recursive: true, force: true });
+}
+
 console.log("");
 if(failures){
   console.log(`${failures} 項測試失敗`);

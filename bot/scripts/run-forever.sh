@@ -5,7 +5,14 @@
 # 已開的倉有 GMGN 伺服器端的停損保護，但機器人本身停了就不會再對帳、
 # 不會再掃描、也不會通知你 —— 你會以為它在跑。
 
-LOG="$HOME/gmgn-bot.log"
+# 一條鏈一個機器人時，每個實例要有自己的紀錄檔 ——
+# 共用一個檔的話，多個行程同時寫，行與行會交錯，出事了沒辦法讀。
+INSTANCE_NAME="${INSTANCE:-${CHAIN:-}}"
+if [ -n "$INSTANCE_NAME" ]; then
+  LOG="$HOME/gmgn-bot-$INSTANCE_NAME.log"
+else
+  LOG="$HOME/gmgn-bot.log"
+fi
 MAX_BYTES=$((5 * 1024 * 1024))     # 5MB 就輪替，手機空間有限
 
 cd "$(dirname "$0")/.." || exit 1

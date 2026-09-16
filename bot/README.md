@@ -54,6 +54,64 @@ node doctor.mjs
 
 零依賴，**不用先 `npm install` 就能跑**。它會逐項檢查 Node 版本、相依套件、`gmgn-cli`、API Key、網路、IPv6、`.env` 每一欄、Telegram token 是否有效、錢包地址與餘額，每個問題都直接給你要打的指令。Windows 會給 PowerShell 的寫法。
 
+## 掃描哪些鏈
+
+```bash
+CHAINS=sol,bsc        # 指定
+CHAINS=all            # 每一條 GMGN 支援的鏈
+```
+
+| | 鏈 |
+|---|---|
+| **可掃描＋可下單** | `sol` `bsc` `base` `eth` |
+| **只能掃描** | `robinhood` `arc` `stable` `arbitrum` `hyperevm` |
+
+只能掃描的那幾條，是因為**官方幣種表沒有列它們的幣種地址**。下單要填 `--input-token`，而文件自己寫著「永遠不要靠記憶或訓練資料猜地址」——猜錯會是靜默失敗或 `no route`，不會有明確錯誤告訴你原因。這幾條鏈的掃描、評分、安全檢查全部照常，只有下單那一步擋住，啟動時會列出來。
+
+⚠️ 每多一條鏈，每輪對 GMGN 的請求就多一份。掃超過 3 條又沒接雷達，`validateConfig` 會警告——被限流的症狀是「安靜地什麼都沒買」。
+
+## 一條鏈一個機器人
+
+```powershell
+powershell -ExecutionPolicy Bypass -File scripts\run-all-chains.ps1
+powershell -ExecutionPolicy Bypass -File scripts\run-all-chains.ps1 -Chains sol,bsc,base
+powershell -ExecutionPolicy Bypass -File scripts\run-all-chains.ps1 -Stop
+```
+
+每個機器人：
+
+| | |
+|---|---|
+| 帳本 | `data/state-<鏈>.json`（**各自獨立**） |
+| 紀錄 | `%USERPROFILE%\gmgn-bot-<鏈>.log` |
+| Telegram | `.env` 的 `TELEGRAM_TOKEN_<鏈大寫>` |
+| 限流封禁 | `data/rate-limit.json`（**共用**） |
+
+### 兩件事必須知道
+
+**1. 風控上限是每個機器人各算各的。** 開 N 個 = 總曝險上限乘以 N。`MAX_OPEN_POSITIONS=3`、`MAX_DEPLOYED_USD=60` 開 9 個，就是最多 27 個部位、在場 $540。**沒有任何上限在擋合計值**——這是「各自獨立帳本」的直接後果。
+
+任一機器人的 `/status` 都會把合計攤出來（唯讀，不影響判斷）：
+
+```
+全部 4 個機器人　合計 5 倉　在場 $100.00　今日 -$8.00
+▸ sol：2 倉 $40.00 🤖
+  bsc：1 倉 $20.00
+  base：2 倉 $40.00 🤖
+  eth：帳本讀不到
+⚠️ 風控上限是每個機器人各算各的，合計數字沒有任何上限在擋。
+```
+
+讀不到的帳本會標出來而不是算成 0——把讀不到當成沒有部位，正好會在最該警覺的時候讓總曝險看起來很安全。
+
+**2. 每條鏈要有自己的 Telegram Token。** 同一個 Token 只允許一個行程輪詢，兩個以上一起跑會互相把對方踢掉（HTTP 409），症狀是訊息時有時無。啟動腳本會先檢查，缺了就拒絕啟動並告訴你要加哪幾行。
+
+### 限流封禁為什麼是共用的
+
+封的是同一把 API Key，不是行程。各記各的話，解封那一刻會有 N 個機器人同時去敲門——而文件寫明冷卻期內每送一次請求封禁就延長 5 秒，9 個就是一次延長 45 秒，然後又是 9 個同時再試。
+
+那個檔案會被多個行程同時寫，所以用 `mkdir` 當跨行程鎖（唯一在所有平台上都原子的操作），逾時的死鎖會被搶過來，避免一個當掉的機器人把全部卡死。
+
 ## 接本機 Meme 雷達（可選，但強烈建議）
 
 [meme-radar](https://github.com/nhovongoc0-max/meme-radar) 是一個本機的唯讀掃描器。設定之後，候選名單改由它提供，機器人**完全不再敲 GMGN 的熱門榜**：
