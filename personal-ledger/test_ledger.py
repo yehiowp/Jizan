@@ -401,6 +401,94 @@ class LedgerTests(unittest.TestCase):
         self.assertEqual(ledger.snapshot()['entries'][0]['merchant'],'原始帳目')
         self.assertEqual(ledger.snapshot()['entries'][0]['category'],'未分類')
 
+    def test_batch_ingest_matches_single_ingest_and_isolates_bad_records(self):
+        records = [self.record(),
+                   self.record(source='gmail',external_id='mail-1',occurred_at='2026-11-10T04:01:00Z'),
+                   self.record(external_id='bad',amount='not-a-number'),
+                   self.record(amount='501'),  # same identifier, different content
+                   self.record(),  # exact replay inside the same batch
+                   'not an object',
+                   self.record(external_id='wallet-2',merchant='書店',occurred_at='2026-11-11T12:00:00+08:00')]
+        outcomes = self.ledger.ingest_many(records, chunk_size=3)
+        self.assertEqual([o['ok'] for o in outcomes],[True,True,False,False,True,False,True])
+        self.assertEqual(outcomes[0]['result']['entry_id'],outcomes[1]['result']['entry_id'])
+        self.assertTrue(outcomes[4]['result']['duplicate'])
+        self.assertIn('內容不同',str(outcomes[3]['error']))
+        self.assertTrue(all(isinstance(o['error'],ValueError) and not o.get('retryable') for o in outcomes if not o['ok']))
+        snapshot = self.ledger.snapshot()
+        self.assertEqual(len(snapshot['entries']),2)
+        self.assertEqual(len(snapshot['sources']),3)
+        self.assertEqual(snapshot['summary']['by_currency'][0]['expense_minor'],100000)
+        self.assertEqual(self.ledger.ingest_many([]),[])
+
+    def test_batch_storage_failure_rolls_back_only_the_unfinished_chunk(self):
+        records = [self.record(external_id=f'wallet-{index}',occurred_at=f'2026-11-{index+1:02d}T12:00:00+08:00') for index in range(5)]
+        original = self.ledger._ingest_prepared
+        calls = []
+        def failing(connection, prepared):
+            calls.append(prepared['external_id'])
+            if len(calls) == 4:
+                raise sqlite3.OperationalError('disk I/O error')
+            return original(connection, prepared)
+        self.ledger._ingest_prepared = failing
+        outcomes = self.ledger.ingest_many(records, chunk_size=2)
+        self.assertEqual([o['ok'] for o in outcomes],[True,True,False,False,False])
+        self.assertTrue(all(o.get('retryable') for o in outcomes[2:]))
+        self.assertEqual(calls,['wallet-0','wallet-1','wallet-2','wallet-3'])
+        # The first chunk is committed; the failed chunk left nothing behind.
+        self.assertEqual({s['external_id'] for s in self.ledger.snapshot()['sources']},{'wallet-0','wallet-1'})
+        self.ledger._ingest_prepared = original
+        retried = self.ledger.ingest_many(records)
+        self.assertEqual([o['result']['duplicate'] for o in retried],[True,True,False,False,False])
+        self.assertEqual(len(self.ledger.snapshot()['entries']),5)
+
+    def test_change_token_tracks_commits_but_not_reads(self):
+        first = self.ledger.change_token()
+        self.assertIsNotNone(first)
+        self.ledger.snapshot()
+        self.ledger.external_ids('apple_pay')
+        self.assertEqual(self.ledger.change_token(),first)
+        self.ledger.ingest(self.record())
+        second = self.ledger.change_token()
+        self.assertNotEqual(second,first)
+        self.ledger.ingest(self.record())  # replay writes nothing
+        self.assertEqual(self.ledger.change_token(),second)
+        self.ledger.asset_event(self.asset())
+        third = self.ledger.change_token()
+        self.assertNotEqual(third,second)
+        self.ledger.set_quote({'symbol':'2330','market':'TWSE','currency':'TWD','price':'1100','as_of':'2026-11-10T13:30:00+08:00'})
+        self.assertNotEqual(self.ledger.change_token(),third)
+        self.assertIsNone(Ledger(Path(self.tmp.name)/'other.sqlite3').__class__.change_token(type('Missing',(),{'database':Path(self.tmp.name)/'missing.sqlite3'})()))
+
+    def test_lean_lookups_agree_with_the_full_snapshot(self):
+        self.ledger.ingest(self.record())
+        self.ledger.ingest(self.record(source='gmail',external_id='mail-1',occurred_at='2026-11-10T04:01:00Z'))
+        self.ledger.ingest(self.record(source='manual',external_id='manual-1',merchant='早餐',account='現金'))
+        self.ledger.asset_event(self.asset())
+        self.ledger.set_quote({'symbol':'2330','market':'TWSE','currency':'TWD','price':'1100','as_of':'2026-11-10T13:30:00+08:00'})
+        snapshot = self.ledger.snapshot()
+        self.assertEqual(self.ledger.external_ids('gmail'),{'mail-1'})
+        self.assertEqual(self.ledger.external_ids('statement'),set())
+        self.assertEqual(self.ledger.portfolio(),snapshot['portfolio'])
+        known = {(s['source'],s['external_id']):s for s in self.ledger.known_sources(('manual','apple_pay'))}
+        self.assertEqual(set(known),{('apple_pay','wallet-1'),('manual','manual-1')})
+        for source in snapshot['sources']:
+            key = (source['source'],source['external_id'])
+            if key in known:
+                self.assertEqual(known[key],{field:source[field] for field in known[key]})
+        self.assertEqual(self.ledger.known_sources(()),[])
+
+    def test_portfolio_numbers_never_use_exponent_notation(self):
+        self.ledger.asset_event(self.asset(symbol='BTC',market='BINANCE',instrument_kind='crypto',quantity='0.00000003',cash_amount='100',fee='0'))
+        self.ledger.asset_event(self.asset(symbol='BTC',market='BINANCE',instrument_kind='crypto',kind='sell',quantity='0.00000001',cash_amount='40',fee='0',occurred_at='2026-11-11T12:00:00+08:00'))
+        self.ledger.asset_event(self.asset(symbol='BTC',market='BINANCE',instrument_kind='crypto',kind='sell',quantity='0.00000002',cash_amount='80',fee='0',occurred_at='2026-11-12T12:00:00+08:00'))
+        position = self.ledger.portfolio()[0]
+        for field in ('quantity_decimal','cost_decimal','realized_decimal','dividend_decimal'):
+            self.assertRegex(position[field],r'^-?\d+(\.\d+)?$')
+        self.assertEqual(Decimal(position['quantity_decimal']),0)
+        self.assertEqual(position['quantity_decimal'],'0.00000000')
+        self.assertEqual(Decimal(position['realized_decimal']),Decimal('20'))
+
 
 if __name__ == '__main__':
     unittest.main()

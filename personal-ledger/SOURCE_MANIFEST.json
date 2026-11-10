@@ -16,8 +16,8 @@
     },
     {
       "path": "CLAUDE_DEBUG.txt",
-      "bytes": 5014,
-      "sha256": "46eb0a932071c103353b07f119a8d98a25692d2b660dac01c31e838a76ce1aaf"
+      "bytes": 5687,
+      "sha256": "29a32a66de39788162d0b2a8dc24bdbd14b5b3e09600c797c3466b7797a3b7fb"
     },
     {
       "path": "INTEGRATIONS.md",
@@ -26,13 +26,13 @@
     },
     {
       "path": "MOBILE.md",
-      "bytes": 1098,
-      "sha256": "0508e10cc5c015c88af5dfcffb8b85aa3b6710e0627859608b8a29bd930cea26"
+      "bytes": 2876,
+      "sha256": "3ba3b0d0af33e8f2a28498c88dc3d9cdc490181205a45398c0c9cc44ebfad5fa"
     },
     {
       "path": "README.md",
-      "bytes": 7627,
-      "sha256": "7d8b6b73c55e53d70d19444195d16fe64289283181c0d83cdf4cad6d49855cc7"
+      "bytes": 8372,
+      "sha256": "d830d3dc7d3ed716027260a8c56321879f37e2535e531052eedfe06d6ee028cb"
     },
     {
       "path": "Start_Ledger.cmd",
@@ -61,8 +61,8 @@
     },
     {
       "path": "desktop.py",
-      "bytes": 66820,
-      "sha256": "61ff87d73a93a4fc5783386e8cdae12ecbc20c7a60dd4fa643c2a7800f43bbf7"
+      "bytes": 71702,
+      "sha256": "d4142bc38faed0a6ea97c80253159eb8113198104722a758cd8314d4b193965c"
     },
     {
       "path": "examples/statement-template.csv",
@@ -71,8 +71,8 @@
     },
     {
       "path": "integrations.py",
-      "bytes": 35864,
-      "sha256": "106c04af38d1a6df10d4ca124e8b8894ba841a0471ffb9eaed676a6f617cbd97"
+      "bytes": 36131,
+      "sha256": "e7da7f9062465cf68a061dc97ffd22d75871a661d0f33526da5d10c3f5915040"
     },
     {
       "path": "ios/PersonalLedger.xcodeproj/project.pbxproj",
@@ -121,8 +121,8 @@
     },
     {
       "path": "ledger.py",
-      "bytes": 39127,
-      "sha256": "aacd0d642c48803ab5cb91bf317864c3d2c28cb6fe79a11fae17c43bc263c07f"
+      "bytes": 45502,
+      "sha256": "e487648dd879f0cf534a662d7392a526c5356a690951bbe5d68970b7fafdcf5b"
     },
     {
       "path": "mobile-guides/APPLE_PAY_WITHOUT_MAC.md",
@@ -136,8 +136,8 @@
     },
     {
       "path": "mobile/dist/app.mjs",
-      "bytes": 16227,
-      "sha256": "fe15e0c739244c1d82c2295957f42f8cc97b5a0b8014c84e45edb85e4e98ceff"
+      "bytes": 18600,
+      "sha256": "c47083c059d04838291fb502920d23fc665f80d8265862d3ae84f67bc62877e1"
     },
     {
       "path": "mobile/dist/apple-pay-guide.html",
@@ -146,8 +146,8 @@
     },
     {
       "path": "mobile/dist/core.mjs",
-      "bytes": 10059,
-      "sha256": "8c9e7d07711b29b1addafb01559a5792b3a56758bd9bcf12c78b5ec79269b453"
+      "bytes": 10525,
+      "sha256": "2813cd2bdb01506753e96f5ef736c6464a0379ab9e759e7e45a9b1badc6db721"
     },
     {
       "path": "mobile/dist/icon-180.png",
@@ -161,8 +161,8 @@
     },
     {
       "path": "mobile/dist/index.html",
-      "bytes": 9047,
-      "sha256": "704c458f85d0874f4c63513f605511091fead297467c1f748a514a3c4da69840"
+      "bytes": 9541,
+      "sha256": "09a32b02964caf80ff1b1cd7a22ff3d4633e0a5828c1076253b7d6b1c2e24bbe"
     },
     {
       "path": "mobile/dist/manifest.webmanifest",
@@ -171,18 +171,23 @@
     },
     {
       "path": "mobile/dist/store.mjs",
-      "bytes": 1261,
-      "sha256": "8f96e51eed37bf2383a0e90416c36c200408926ba4a50fdc1c432dd5cc5281df"
+      "bytes": 1815,
+      "sha256": "2811f5cb904c5caa554f6bbacef9ffff9e7d2b4a29fd546e5115079ee832b5b0"
     },
     {
       "path": "mobile/dist/style.css",
-      "bytes": 12001,
-      "sha256": "0b47bc639ff74d2f2872d00ff8af39a7cf929bbbb55b6721ed9f87cb9bfee31b"
+      "bytes": 12517,
+      "sha256": "c534a97690eb948de23c21f0c9582402e6230b802bb7526b9cadcc8369feed5b"
     },
     {
       "path": "mobile/dist/sw.js",
-      "bytes": 2746,
-      "sha256": "b668565c200490bccd38876def1be0eb090af9972140c779229a0252106b446e"
+      "bytes": 2979,
+      "sha256": "149a729bdadedd68d0f3fe1a24894b86d81a00c1caa61ae147df7f57fd26664b"
+    },
+    {
+      "path": "mobile/e2e_browser.cjs",
+      "bytes": 11962,
+      "sha256": "1647232a4576907e93c527d343ff5113386338240e5260b0c51f81d27002957d"
     },
     {
       "path": "mobile/package-lock.json",
@@ -191,28 +196,28 @@
     },
     {
       "path": "mobile/package.json",
-      "bytes": 253,
-      "sha256": "24382c4176c78628b64b0369cbb2e7437e400df7a833a919abb203bce28896b7"
+      "bytes": 291,
+      "sha256": "3032dbf5dbe9eca6414f5e02bfff13f39ccda88a4097c416d55bf24d3aac01dd"
     },
     {
       "path": "mobile/prepare.mjs",
-      "bytes": 683,
-      "sha256": "ed9d5602a78b382af63ab621dc019dea0fb43858d66d47bd934a4a3fd163e25c"
+      "bytes": 1493,
+      "sha256": "88db3165df738cb7f0fdd24214021442c9f05ff700b4c677cad8f632534f2a0d"
     },
     {
       "path": "mobile/test_core.mjs",
-      "bytes": 7032,
-      "sha256": "922d2100282b18236f8809594e948da028971dd6a6fca0c28e16021f2d5f8ec3"
+      "bytes": 8638,
+      "sha256": "b3cd5ddb18830d0b621fb1b23ca3f83c1b3be316e22ad8a35e54b74000cd0ad3"
     },
     {
       "path": "mobile/test_dom.mjs",
-      "bytes": 5220,
-      "sha256": "27aaa49bf0cae7e9e121b04f456d5253075e0d17d408effd7341e26f18415621"
+      "bytes": 9843,
+      "sha256": "441cd8637b3d3e232773cd40ec7af5bdaa25b897fe0948c079426089bd74446a"
     },
     {
       "path": "mobile/test_sw.mjs",
-      "bytes": 2298,
-      "sha256": "70f6661bb230fff56455955140534f31252abc2972305b6c7b64951bda472131"
+      "bytes": 5741,
+      "sha256": "f59add68682452db0528a244f375b6584b858cdd3bba41a8aa48cf4ad8596bcf"
     },
     {
       "path": "prepare_statement.py",
@@ -236,8 +241,8 @@
     },
     {
       "path": "sync_server.py",
-      "bytes": 11877,
-      "sha256": "bf8b3fe5a555364f0fcf10de75c668f36c3751b7ad7784f013a98d64ed6cd6c4"
+      "bytes": 12151,
+      "sha256": "05457df4c3fae09129569fa62c19a2e0a5fed9d461187ad64dc5d96a7ceb1d3b"
     },
     {
       "path": "test_bank_statement.py",
@@ -246,18 +251,18 @@
     },
     {
       "path": "test_desktop.py",
-      "bytes": 15342,
-      "sha256": "6766958a1cfa15591d654f98fb7d75155931a7a6c97cd5480bc208f742e946d8"
+      "bytes": 24386,
+      "sha256": "e84f6f8a52e581f1e94ea11c256ccae4aaf606cdea89a43e33335437f67392a9"
     },
     {
       "path": "test_integrations.py",
-      "bytes": 21326,
-      "sha256": "630b97a29b925024382f795c4aa37a4d38cc59a4dcd52d077da813134761e253"
+      "bytes": 22627,
+      "sha256": "22cbb7c3df2d35832a2ec980599f07eccd657b753d9e0d3e60b4393c6b800cd5"
     },
     {
       "path": "test_ledger.py",
-      "bytes": 24027,
-      "sha256": "77860f99814fe3e3b346f27e9cfae0cb504c3833b1b3b310dfddf857dd352be3"
+      "bytes": 30047,
+      "sha256": "30a3828f4322cff752908d6000becc40ac967a627ce27a7e5862256969a35c33"
     },
     {
       "path": "test_mobile_roundtrip.py",
@@ -271,18 +276,18 @@
     },
     {
       "path": "test_sync_server.py",
-      "bytes": 8235,
-      "sha256": "7fcbb697cd01e71658ac47f7869e3897dfc5434111683edddb9cfe8d95432ca5"
+      "bytes": 9298,
+      "sha256": "09c811b4aa4060aded22b371880e1bd420a03e1807cb1af690d8f87369fbbde7"
     },
     {
       "path": "test_transfer.py",
-      "bytes": 10724,
-      "sha256": "250841cab09727e011966015fc055171316fbfb665b24b78704e30cd3e4fde8a"
+      "bytes": 11562,
+      "sha256": "ba14a3de9f7f3a1100eee57f64fef158230f65896ba80a8de19b56f5627c97e3"
     },
     {
       "path": "transfer.py",
-      "bytes": 10855,
-      "sha256": "97203f3c4cd13ca6877fd906bba84f11657837c466377dabb6d45a43f2112c77"
+      "bytes": 11029,
+      "sha256": "5094b1cb88635d46e9689785ae116e42bd89bb06929698c1588ada06844a53ad"
     }
   ]
 }

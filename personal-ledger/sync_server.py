@@ -220,21 +220,25 @@ class SyncHandler(BaseHTTPRequestHandler):
         except (ValueError, UnicodeDecodeError):
             self._send(400, {"error": "Invalid JSON or records array"})
             return
+        try:
+            # Records commit together in chunks; each one is still validated and
+            # isolated individually, so a rejected record does not affect the rest.
+            outcomes = self.server.ledger.ingest_many(records)
+        except Exception:
+            outcomes = None
+        if outcomes is None or any(outcome.get("retryable") for outcome in outcomes):
+            # Earlier records may have committed. Retrying is safe through Ledger idempotency.
+            self._send(500, {"error": "Storage failed; keep pending records and retry"})
+            return
         results = []
-        for record in records:
+        for record, outcome in zip(records, outcomes):
             external_id = record.get("external_id") if isinstance(record, dict) else None
             source = record.get("source") if isinstance(record, dict) else None
-            try:
-                if not isinstance(record, dict):
-                    raise ValueError("Record must be an object")
-                result = self.server.ledger.ingest(record)
-                results.append({"source": source, "external_id": external_id, "ok": True, "result": result})
-            except (ValueError, TypeError, KeyError) as error:
-                results.append({"source": source, "external_id": external_id, "ok": False, "error": str(error)[:300]})
-            except Exception:
-                # Earlier records may have committed. Retrying is safe through Ledger idempotency.
-                self._send(500, {"error": "Storage failed; keep pending records and retry"})
-                return
+            if outcome["ok"]:
+                results.append({"source": source, "external_id": external_id, "ok": True, "result": outcome["result"]})
+            else:
+                message = str(outcome["error"]) if isinstance(record, dict) else "Record must be an object"
+                results.append({"source": source, "external_id": external_id, "ok": False, "error": message[:300]})
         try:
             snapshot = self.server.ledger.snapshot()
             self._send(200, {

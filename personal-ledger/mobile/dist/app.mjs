@@ -1,26 +1,48 @@
-import {DIGITS,MAX_FILE,normalize,minor,decimal,money,key,mergeRecords,previewRecords,validateSnapshot,pendingRecords,displayRows,totals,makeTransfer,formatRecordDate} from './core.mjs';
+import {DIGITS,MAX_FILE,normalize,minor,decimal,money,key,mergeRecords,previewRecords,validateSnapshot,displayRows,totals,makeTransfer,formatRecordDate,formatTime} from './core.mjs';
 import {read,mutate} from './store.mjs';
 const $=id=>document.getElementById(id),escape=s=>String(s??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
 let state,view='home',filter='all',entryKind='expense',importMode='records',prepared,toastTimer;
+// rows 是目前狀態排序後的顯示資料，只在帳本內容改變時重算；清單一次只放 PAGE 筆，避免上千筆同時進 DOM。
+const PAGE=100,searchText=new WeakMap();let rows=[],shown=PAGE;
+const haystack=r=>{let text=searchText.get(r);if(text===undefined){text=[r.merchant,r.account,r.category].join(' ').toLocaleLowerCase();searchText.set(r,text)}return text};
 const REASONS={amount_mismatch:'金額不同',currency_mismatch:'幣別不同',merchant_mismatch:'商家描述不同',possible_duplicate:'疑似重複通知',ambiguous_match:'有多筆候選交易',manual_confirmation:'來源需人工確認',missing_entry:'帳單有紀錄，帳本未找到',time_uncertain:'只有日期，需核對時間'};
 const status=r=>r.phone?'待傳給 Windows':({verified:'已核對',pending:'待確認',unverified:'尚未銀行核對'}[r.status]??r.status??'');
-const fmtDate=iso=>new Date(iso).toLocaleString('zh-TW',{month:'numeric',day:'numeric',hour:'2-digit',minute:'2-digit',hour12:false});
+const fmtDate=formatTime;
 const monthKey=d=>`${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,'0')}`;
 function toast(message){$('toast').textContent=message;$('toast').hidden=false;clearTimeout(toastTimer);toastTimer=setTimeout(()=>$('toast').hidden=true,6000)}
 function showView(name){if(!state)return;view=name;for(const v of document.querySelectorAll('.view'))v.hidden=v.id!==`view-${name}`;for(const b of document.querySelectorAll('.bottom-nav button'))b.classList.toggle('active',b.dataset.view===name);window.scrollTo({top:0,behavior:'smooth'})}
 function empty(title,body,button=''){return `<div class="empty"><span class="empty-icon">▤</span><strong>${escape(title)}</strong><p>${escape(body)}</p>${button}</div>`}
 function recordHtml(r){const income=r.kind==='income',symbol=income?'↙':r.kind==='transfer'?'⇄':'↗',sign=income?'+':r.kind==='expense'?'−':'';return `<article class="record"><span class="record-icon ${income?'income':''}">${symbol}</span><div class="record-info"><strong>${escape(r.merchant||'未填摘要')}</strong><small>${escape(formatRecordDate(r))} · ${escape(r.category||'未分類')}<br>${escape(r.account||'未指定帳戶')}</small></div><div class="record-side"><strong class="${income?'positive':''}">${sign}${escape(money(minor(r.amount,r.currency),r.currency))}</strong><small>${escape(status(r))}</small></div></article>`}
-function render(){
-  const rows=displayRows(state),now=new Date(),currencies=[...new Set(['TWD',...rows.map(r=>r.currency)])],pending=pendingRecords(state).length;
+function renderSummary(){
+  const now=new Date(),currencies=[...new Set(['TWD',...rows.map(r=>r.currency)])];
   const currency=currencies.includes($('summaryCurrency').value)?$('summaryCurrency').value:(state.currency||'TWD');
   $('summaryCurrency').innerHTML=currencies.map(c=>`<option${c===currency?' selected':''}>${c}</option>`).join('');
   const t=totals(rows,currency,monthKey(now));$('monthExpense').textContent=money(t.expense,currency);$('monthIncome').textContent=money(t.income,currency);$('monthNet').textContent=money(t.net,currency);
-  document.querySelector('.balance-top > span').textContent=pending?'本月支出（含待核對）':'本月支出';
   $('todayLabel').textContent=now.toLocaleDateString('zh-TW',{year:'numeric',month:'long',day:'numeric',weekday:'long'});
+}
+// 搜尋與篩選只重畫這份清單；每筆的搜尋文字只計算一次。
+function renderLedger(reset=false){
+  if(reset)shown=PAGE;
+  const query=$('search').value.toLocaleLowerCase(),selected=rows.filter(r=>(filter==='all'||r.kind===filter)&&haystack(r).includes(query)),visible=selected.slice(0,shown);
+  $('ledgerList').innerHTML=selected.length?visible.map(recordHtml).join('')+(selected.length>visible.length?`<button class="more-records" id="moreRecords">顯示更多（已顯示 ${visible.length} / ${selected.length} 筆）</button>`:''):empty('這裡還沒有紀錄',rows.length?'試試其他搜尋條件。':'先記一筆，或匯入 Apple Pay 捷徑紀錄。');
+}
+// 在 iPhone 的瀏覽器分頁（不是主畫面 App）開啟時，提示加入主畫面。
+// 主畫面 App 與瀏覽器各自保存帳目，所以已有紀錄時一併說明如何搬移。
+const INSTALL_HINT='installHintDismissed';
+function installHint(){
+  const browserTab=navigator.standalone===false&&!window.matchMedia?.('(display-mode: standalone)')?.matches;
+  let dismissed=false;try{dismissed=window.localStorage.getItem(INSTALL_HINT)==='1'}catch{}
+  $('installBanner').hidden=!browserTab||dismissed;if($('installBanner').hidden)return;
+  const count=state.records.length;
+  $('installText').textContent='目前在瀏覽器中開啟。加入主畫面後，從圖示開啟就是全螢幕 App，沒有網址列，離線也能用。'+(count?`注意：這裡的 ${count} 筆紀錄不會自動出現在主畫面 App；請先在「轉移」頁按「完整備份」，再到主畫面 App 按「匯入備份」。`:'之後請一律從主畫面圖示開啟。');
+}
+function render(){
+  rows=displayRows(state);installHint();const pending=rows.reduce((n,r)=>n+(r.phone?1:0),0);
+  renderSummary();
+  document.querySelector('.balance-top > span').textContent=pending?'本月支出（含待核對）':'本月支出';
   $('pendingTitle').textContent=pending?`${pending} 筆手機紀錄，等待電腦核對`:'手機紀錄已整理好';$('pendingDescription').textContent=pending?'匯出紀錄檔，再交給 Windows 匯入。':'新增紀錄時，即使沒有網路也會保存在手機。';$('exportCount').textContent=`(${pending})`;
   $('recentList').innerHTML=rows.length?rows.slice(0,5).map(recordHtml).join(''):empty('從今天的第一筆開始','一杯咖啡、一份午餐，讓每筆收支都有記錄。','<button class="secondary" data-add="expense">＋ 新增第一筆</button>');
-  const query=$('search').value.toLocaleLowerCase(),selected=rows.filter(r=>(filter==='all'||r.kind===filter)&&[r.merchant,r.account,r.category].join(' ').toLocaleLowerCase().includes(query));
-  $('ledgerList').innerHTML=selected.length?selected.map(recordHtml).join(''):empty('這裡還沒有紀錄',rows.length?'試試其他搜尋條件。':'先記一筆，或匯入 Apple Pay 捷徑紀錄。');
+  renderLedger();
   const reviews=state.snapshot?.reviews??[];$('reviewBadge').hidden=!reviews.length;$('reviewBadge').textContent=reviews.length;
   $('reviewList').innerHTML=reviews.length?reviews.map(r=>{const source=r.source??{},entry=r.entry,dateLines=[];if(source.occurred_at||source.transaction_date)dateLines.push(`交易：${formatRecordDate(source)}`);if(source.posting_date)dateLines.push(`入帳：${source.posting_date}`);let amount='未提供';try{amount=source.amount!==undefined?money(minor(source.amount,source.currency),source.currency):source.amount_minor!==undefined&&Number.isSafeInteger(source.amount_minor)?money(BigInt(source.amount_minor),source.currency):'未提供'}catch{}return `<article class="review-card"><h2>${escape(source.merchant||entry?.merchant||'待確認交易')}</h2><span class="reason">${escape(REASONS[r.reason]??r.reason)}</span>${dateLines.length?`<p>${dateLines.map(escape).join('<br>')}</p>`:''}<div class="compare"><div><small>帳本金額</small>${escape(entry?money(minor(entry.amount,entry.currency),entry.currency):'尚無帳目')}</div><div><small>來源金額</small>${escape(amount)}</div></div><p>保留原紀錄，請在 Windows 確認採用金額、分開記帳或關聯帳目。</p></article>`}).join(''):empty('目前沒有待確認項目',state.snapshot?'Windows 核對結果會在下次匯入總帳後更新。':'匯入 Windows 總帳後，可在這裡查看核對結果。');
   const portfolio=state.snapshot?.portfolio??[];$('portfolioList').innerHTML=portfolio.length?portfolio.map(p=>`<div class="asset-row"><div><strong>${escape(p.symbol)} <small>${escape(p.market)} · ${escape(p.account)}</small></strong><small>持有 ${escape(p.quantity_decimal)}</small></div><div>${escape(p.value_decimal?`${p.quote_currency} ${p.value_decimal}`:'尚無報價')}<small>${escape(p.quote_as_of?fmtDate(p.quote_as_of):'請在 Windows 更新行情')}</small></div></div>`).join(''):empty('尚未匯入持倉','在 Windows 管理買賣與報價，再匯出總帳到手機。');
@@ -51,11 +73,25 @@ async function saveFile(value,name){const blob=new Blob([JSON.stringify(value,nu
 $('exportBtn').addEventListener('click',()=>{const transfer=makeTransfer(state,crypto.randomUUID(),new Date().toISOString());if(!transfer.records.length){toast('沒有待傳給 Windows 的紀錄；可選擇完整備份。');return}if(transfer.records.length>5000||new TextEncoder().encode(JSON.stringify(transfer)).length>10*1024*1024){toast('紀錄檔超過 Windows 單次匯入範圍，請先使用完整備份。');return}saveFile(transfer,`手機紀錄-${new Date().toISOString().slice(0,10)}.json`)});
 $('backupBtn').addEventListener('click',()=>saveFile({format:'personal-ledger-mobile-backup',version:1,backup_id:crypto.randomUUID(),created_at:new Date().toISOString(),state},`隨身帳本備份-${new Date().toISOString().slice(0,10)}.json`));
 $('persistBtn').addEventListener('click',async()=>{try{const retained=await navigator.storage?.persist?.();toast(retained?'已取得持久儲存；仍請保留自己的備份。':'系統未保證持久儲存；加到主畫面並定期備份。')}catch{toast('此瀏覽器未提供持久儲存設定，請定期備份。')}});
-$('summaryCurrency').addEventListener('change',render);$('search').addEventListener('input',render);
-document.addEventListener('click',e=>{const b=e.target.closest('button');if(!b)return;if(b.dataset.view)showView(b.dataset.view);if(b.dataset.add)openEntry(b.dataset.add);if(b.dataset.kind)setKind(b.dataset.kind);if(b.dataset.filter){filter=b.dataset.filter;for(const f of document.querySelectorAll('[data-filter]'))f.classList.toggle('selected',f===b);render();}});
+$('summaryCurrency').addEventListener('change',renderSummary);$('search').addEventListener('input',()=>renderLedger(true));
+document.addEventListener('click',e=>{const b=e.target.closest('button');if(!b)return;if(b.dataset.view)showView(b.dataset.view);if(b.dataset.add)openEntry(b.dataset.add);if(b.dataset.kind)setKind(b.dataset.kind);if(b.dataset.filter){filter=b.dataset.filter;for(const f of document.querySelectorAll('[data-filter]'))f.classList.toggle('selected',f===b);renderLedger(true);}if(b.id==='moreRecords'){shown+=PAGE;renderLedger();}});
 $('importSnapshotBtn').onclick=()=>chooseFile('snapshot');$('importWalletBtn').onclick=()=>chooseFile('records');$('restoreBtn').onclick=()=>chooseFile('backup');
-for(const id of ['closeEntry'])$(id).onclick=()=>$('entryDialog').close();for(const id of ['closeImport','cancelImport'])$(id).onclick=()=>{prepared=null;$('importDialog').close()};$('helpBtn').onclick=()=>$('helpDialog').showModal();for(const id of ['closeHelp','helpDone'])$(id).onclick=()=>$('helpDialog').close();
+for(const id of ['closeEntry'])$(id).onclick=()=>$('entryDialog').close();for(const id of ['closeImport','cancelImport'])$(id).onclick=()=>{prepared=null;$('importDialog').close()};$('helpBtn').onclick=$('installHow').onclick=()=>$('helpDialog').showModal();$('installClose').onclick=()=>{try{window.localStorage.setItem(INSTALL_HINT,'1')}catch{}$('installBanner').hidden=true};for(const id of ['closeHelp','helpDone'])$(id).onclick=()=>$('helpDialog').close();
 function network(){const online=navigator.onLine;$('networkDot').classList.toggle('offline',!online);$('networkLabel').textContent=online?'帳目儲存在手機':'目前離線，仍可記帳'}window.addEventListener('online',network);window.addEventListener('offline',network);
 window.addEventListener('pageshow',async()=>{if(state){try{state=await read();render()}catch(e){toast(e.message)}}});
-async function offlineSetup(){if(!('serviceWorker'in navigator)||!isSecureContext){$('offlineLabel').textContent='請以安全網址開啟';return}try{const registration=await navigator.serviceWorker.register('./sw.js',{scope:'./'});await navigator.serviceWorker.ready;$('offlineLabel').textContent='已可離線開啟';registration.addEventListener('updatefound',()=>{const worker=registration.installing;worker?.addEventListener('statechange',()=>{if(worker.state==='installed'&&navigator.serviceWorker.controller)toast('新版本已準備；關閉所有帳本視窗後再開啟即可更新。')})})}catch{$('offlineLabel').textContent='離線畫面尚未準備';toast('帳目已保存在手機，請保持網路稍後重新開啟以準備離線畫面。')}}
+// 安裝失敗（例如私人網站登入逾期，拿到的是登入頁）時 register() 仍會成功、ready 則永遠等不到；
+// 因此要看安裝中的 worker 是否變成 redundant，才能告知使用者離線畫面尚未準備好。
+async function offlineSetup(){
+  if(!('serviceWorker'in navigator)||!isSecureContext){$('offlineLabel').textContent='請以安全網址開啟';return}
+  const failed=()=>{$('offlineLabel').textContent='離線畫面尚未準備';toast('帳目已保存在手機，請保持網路稍後重新開啟以準備離線畫面。')};
+  try{
+    const registration=await navigator.serviceWorker.register('./sw.js',{scope:'./'}),watched=new WeakSet();
+    const watch=worker=>{if(!worker||watched.has(worker))return;watched.add(worker);worker.addEventListener('statechange',()=>{
+      if(worker.state==='installed'&&navigator.serviceWorker.controller)toast('新版本已準備；關閉所有帳本視窗後再開啟即可更新。');
+      if(worker.state==='redundant'&&!registration.active)failed();
+    })};
+    watch(registration.installing);registration.addEventListener('updatefound',()=>watch(registration.installing));
+    navigator.serviceWorker.ready.then(()=>{$('offlineLabel').textContent='已可離線開啟'});
+  }catch{failed()}
+}
 try{for(const c of Object.keys(DIGITS))$('currency').insertAdjacentHTML('beforeend',`<option>${c}</option>`);state=await read();render();network();offlineSetup();}catch(e){for(const v of document.querySelectorAll('.view'))v.hidden=true;$('fatal').hidden=false;$('fatalMessage').textContent=e.message;$('networkLabel').textContent='尚未成功開啟本機儲存';}

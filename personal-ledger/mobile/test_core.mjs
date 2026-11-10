@@ -1,5 +1,5 @@
 import test from 'node:test';import assert from 'node:assert/strict';
-import {minor,money,normalize,mergeRecords,previewRecords,validateSnapshot,pendingRecords,displayRows,totals,makeTransfer,dateOnly,formatRecordDate} from './dist/core.mjs';
+import {minor,money,normalize,mergeRecords,previewRecords,validateSnapshot,pendingRecords,displayRows,totals,makeTransfer,dateOnly,formatRecordDate,formatTime} from './dist/core.mjs';
 const row=(more={})=>({source:'manual',external_id:'test-1',amount:'500.00',currency:'TWD',merchant:'測試商店',account:'日常消費',kind:'expense',occurred_at:'2026-11-10T12:30:00+08:00',...more});
 test('integer monetary arithmetic beyond JS safe integer',()=>{assert.equal(minor('90071992547409.91','TWD'),9007199254740991n);assert.equal(money(9007199254740992n,'TWD'),'TWD 90,071,992,547,409.92');assert.throws(()=>minor('0.001','TWD'));assert.throws(()=>minor(1,'TWD'));assert.throws(()=>minor('-1','USD'));});
 
@@ -44,4 +44,23 @@ test('date metadata in entries and nested review sources is validated before per
   assert.equal(current.reviews[0].source.posting_date,'2026-11-11');
   assert.doesNotThrow(()=>validateSnapshot({...snapshot,entries:[{id:'old',...row(),transaction_date:null,posting_date:null,statement_kind:null}]}));
   assert.throws(()=>validateSnapshot({...snapshot,entries:[{id:'e',...row(),time_precision:'year'}]}));
+});
+
+test('shared time formatter matches per-call locale formatting',()=>{
+  const options={month:'numeric',day:'numeric',hour:'2-digit',minute:'2-digit',hour12:false};
+  for(const value of ['2026-11-10T12:30:00+08:00','2026-01-01T00:00:00Z','2026-12-31T23:59:59.999999Z','2024-02-29T16:05:00-05:00','1999-07-04T09:09:09+09:00']){
+    assert.equal(formatTime(value),new Date(value).toLocaleString('zh-TW',options));
+    assert.equal(formatRecordDate(row({occurred_at:value})),new Date(value).toLocaleString('zh-TW',options));
+  }
+  assert.equal(formatTime('not a date'),new Date('not a date').toLocaleString('zh-TW',options));
+});
+
+test('display order is newest first and stable for equal times',()=>{
+  const entries=Array.from({length:400},(_,i)=>({id:`e${i}`,...row({external_id:`e${i}`,occurred_at:new Date(Date.UTC(2026,0,1+(i*7919)%60,(i*31)%24)).toISOString()})}));
+  const records=[normalize(row({external_id:'phone-a',occurred_at:entries[10].occurred_at})),normalize(row({external_id:'phone-b',occurred_at:'2027-01-01T00:00:00Z'}))];
+  const state={records,snapshot:{entries,accepted_sources:[]}};
+  const expected=[...entries.map(r=>r.id),...records.map(r=>`manual:${r.external_id}`)].map((id,index)=>({id,index,at:Date.parse(index<entries.length?entries[index].occurred_at:records[index-entries.length].occurred_at)})).sort((a,b)=>b.at-a.at||a.index-b.index).map(r=>r.id);
+  const shown=displayRows(state);
+  assert.deepEqual(shown.map(r=>r.id),expected);
+  assert.equal(shown[0].id,'manual:phone-b');assert.equal(shown[0].phone,true);assert.equal(shown.filter(r=>r.phone).length,2);
 });

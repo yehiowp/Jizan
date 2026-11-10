@@ -482,7 +482,11 @@ def sync_gmail(ledger, config_path=None, max_messages=50) -> dict:
     pending_path = _data_dir() / ("gmail-pending-" + config_id + ".json")
     cursor_path = _data_dir() / ("gmail-cursor-" + config_id + ".json")
     pending = json.loads(pending_path.read_text(encoding="utf-8")) if pending_path.exists() else {}
-    known_ids = {str(row["external_id"]) for row in ledger.snapshot().get("sources", []) if row.get("source") == "gmail"}
+    if hasattr(ledger, "external_ids"):
+        # Index-only lookup; a periodic sync must not rebuild the whole ledger snapshot.
+        known_ids = {str(value) for value in ledger.external_ids("gmail")}
+    else:
+        known_ids = {str(row["external_id"]) for row in ledger.snapshot().get("sources", []) if row.get("source") == "gmail"}
     pending = {key: value for key, value in pending.items() if key not in known_ids}
     scope = hashlib.sha256(json.dumps({"query": query, "label_id": label_id, "account": config.get("account"),
                                        "timezone_offset": config.get("timezone_offset")}, sort_keys=True).encode()).hexdigest()
@@ -623,7 +627,8 @@ def fetch_quote(asset: dict, *, twse_rows=None) -> dict:
 
 
 def update_quotes(ledger, assets=None) -> dict:
-    assets = assets if assets is not None else ledger.snapshot().get("portfolio", [])
+    if assets is None:
+        assets = ledger.portfolio() if hasattr(ledger, "portfolio") else ledger.snapshot().get("portfolio", [])
     summary = {"updated": 0, "errors": [], "quotes": []}
     seen, twse_rows, twse_error = set(), None, None
     for asset in assets:

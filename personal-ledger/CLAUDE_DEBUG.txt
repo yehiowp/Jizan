@@ -23,7 +23,7 @@ node prepare.mjs
 npm.cmd test
 Pop-Location
 
-既有驗證基準：139 個 Python 測試、26 個 Node 測試通過。這是交接時的既有結果；修改後請重新執行。Python 跨語言測試在找不到 Node 時會跳過，需留意測試輸出的 skipped 數量。
+既有驗證基準：154 個 Python 測試、38 個 Node 測試通過。這是交接時的既有結果；修改後請重新執行。Python 跨語言測試在找不到 Node 時會跳過，需留意測試輸出的 skipped 數量。
 
 手機網頁本機預覽
 .\.venv\Scripts\python.exe -m http.server 8000 --bind 127.0.0.1 --directory mobile/dist
@@ -32,7 +32,7 @@ Pop-Location
 
 程式位置
 - desktop.py：Tkinter Windows 介面、帳目／待確認／匯入／資產／設定。
-- ledger.py、schema.sql：SQLite、來源去重、核對、帳目、持倉、備份還原。
+- ledger.py、schema.sql：SQLite、來源去重、核對、帳目、持倉、備份還原。大量匯入用 Ledger.ingest_many（分批提交、逐筆以 savepoint 隔離），結果必須與逐筆 ingest 完全相同；external_ids／known_sources／portfolio／change_token 是給定期工作與介面用的輕量查詢，避免每次都建立完整 snapshot。
 - statements.py：CSV／TSV 欄位轉換與 PDF 文字擷取。
 - bank_statement.py：台新信用卡 PDF 明細解析與摘要控制。
 - prepare_statement.py：本機 PDF 解密／預覽輔助程式。
@@ -40,7 +40,8 @@ Pop-Location
 - integrations.py：Gmail 唯讀 OAuth／郵件解析、TWSE／加密貨幣報價。
 - sync_server.py：可選用的原生 iOS 區域網路服務，預設關閉。
 - mobile/dist/：實際手機 PWA 原始碼，包含 app.mjs、core.mjs、store.mjs、sw.js、HTML、CSS；不是可刪除的建置快取。
-- mobile/test_*.mjs：核心、模擬 DOM 與 Service Worker 測試。
+- mobile/test_*.mjs：核心、模擬 DOM 與 Service Worker 測試（含 sw.js 快取版本與檔案清單是否和 dist/ 一致）。
+- mobile/e2e_browser.cjs：選用的真實瀏覽器檢查（npm run test:browser，需另裝 Playwright；未安裝時略過）。
 - ios/：原生 iOS 開發版，尚未經 Xcode 編譯或安裝。
 - test_*.py：合成資料測試；examples/：合成 CSV 範本。
 - README.md、INTEGRATIONS.md、TRANSFER.md、TAISHIN_STATEMENT.md：功能與格式說明。
@@ -54,7 +55,8 @@ Pop-Location
 - 不同幣別不直接合計；USDT 不視為 USD。修改配對、金額、持倉或交換格式時，請補充能重現問題的測試。
 
 已知限制
-- PWA 已有模擬 DOM／IndexedDB／離線快取測試，尚未完成 iPhone Safari／Wallet 實機驗證。
+- PWA 已有模擬 DOM／IndexedDB／離線快取測試，並在 Chromium（模擬 iPhone 尺寸）通過端對端檢查；尚未完成 iPhone Safari／Wallet 實機驗證。
+- mobile/dist/sw.js 是依測試與文件重寫的版本（原始交接包缺少此檔）；若有原版請比對後決定採用哪一份。
 - 手機與 Windows 目前透過 JSON 檔案交換，不是背景自動同步；網頁不能任意讀其他 App 的推播。
 - Gmail 需要使用者另行設定 Desktop OAuth 與唯讀授權；原始碼不含已授權帳號或 token。
 - 目前已驗證一種台新文字型電子帳單格式；其他銀行僅提供文字預覽，掃描帳單尚無 OCR。

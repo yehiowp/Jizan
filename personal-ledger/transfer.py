@@ -138,7 +138,9 @@ def preview_transfer(value, ledger: Ledger | None = None):
     items = payload.get("records")
     if not isinstance(items, list) or len(items) > MAX_RECORDS:
         raise ValueError("手機紀錄必須是陣列，且每檔最多 5000 筆")
-    existing = {(s["source"], s["external_id"]): s for s in ledger.snapshot()["sources"]} if ledger else {}
+    # Only phone-originated sources can collide with a phone export; read just
+    # their fingerprinted fields instead of building a whole ledger snapshot.
+    existing = {(s["source"], s["external_id"]): s for s in ledger.known_sources(("manual", "apple_pay"))} if ledger else {}
     records, errors, rows = [], [], []
     for index, item in enumerate(items, 1):
         try:

@@ -25,12 +25,15 @@ function dateMetadata(raw){
   if(raw.statement_kind!=null)result.statement_kind=text(raw.statement_kind,'帳單交易類型',100);
   return result;
 }
+// 重複使用同一個格式器；每筆都呼叫 toLocaleString 會各自建立格式器，清單一長就明顯變慢。
+const TIME_FORMAT=new Intl.DateTimeFormat('zh-TW',{month:'numeric',day:'numeric',hour:'2-digit',minute:'2-digit',hour12:false});
+export function formatTime(value){const date=new Date(value);return Number.isNaN(date.getTime())?'Invalid Date':TIME_FORMAT.format(date)}
 export function formatRecordDate(record){
   if((record.time_precision??record.date_precision)==='day'){
     const value=record.transaction_date??record.occurred_at?.slice(0,10);
     return value?`${dateOnly(value)} · 時間未提供`:'日期未提供 · 時間未提供';
   }
-  return record.occurred_at?new Date(record.occurred_at).toLocaleString('zh-TW',{month:'numeric',day:'numeric',hour:'2-digit',minute:'2-digit',hour12:false}):'日期未提供';
+  return record.occurred_at?formatTime(record.occurred_at):'日期未提供';
 }
 function recordMonth(record){
   if((record.time_precision??record.date_precision)==='day')return dateOnly(record.transaction_date??record.occurred_at.slice(0,10)).slice(0,7);
@@ -79,6 +82,10 @@ export function validateSnapshot(value){
   return {...value,entries,reviews,accepted_sources};
 }
 export function pendingRecords(state){const known=new Set((state.snapshot?.accepted_sources??[]).map(key));return state.records.filter(r=>!known.has(key(r)));}
-export function displayRows(state){return [...(state.snapshot?.entries??[]).map(r=>({...r,phone:false})),...pendingRecords(state).map(r=>({...r,id:key(r),phone:true,status:'local'}))].sort((a,b)=>Date.parse(b.occurred_at)-Date.parse(a.occurred_at));}
+export function displayRows(state){
+  // 每筆時間只解析一次再排序（比較函式內解析會重複 n·log n 次）；順序與穩定性不變。
+  const rows=[...(state.snapshot?.entries??[]).map(r=>({...r,phone:false})),...pendingRecords(state).map(r=>({...r,id:key(r),phone:true,status:'local'}))],time=new Map(rows.map(r=>[r,Date.parse(r.occurred_at)]));
+  return rows.sort((a,b)=>time.get(b)-time.get(a));
+}
 export function totals(rows,currency,month){let expense=0n,income=0n;for(const r of rows){if(r.currency!==currency)continue;if(month&&recordMonth(r)!==month)continue;const n=minor(r.amount,currency);if(r.kind==='expense')expense+=n;else if(r.kind==='income')income+=n;}return {expense,income,net:income-expense};}
 export function makeTransfer(state,id,at){return {format:'personal-ledger-transfer',version:1,device_id:state.device_id,export_id:id,created_at:iso(at),records:pendingRecords(state)};}

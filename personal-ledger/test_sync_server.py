@@ -2,6 +2,7 @@
 
 import http.client
 import json
+import sqlite3
 from pathlib import Path
 import tempfile
 import threading
@@ -130,13 +131,27 @@ class SyncTransportTests(unittest.TestCase):
         self.assertEqual(self.request(path="/v1/sync?token=anything")[0], 404)
 
     def test_unexpected_storage_failure_does_not_acknowledge(self):
-        def failed(_):
-            raise RuntimeError("secret internal connection details")
-        self.server.ledger.ingest = failed
-        status, response = self.request({"records": [self.record()]})
-        self.assertEqual(status, 500)
-        self.assertNotIn("secret", json.dumps(response))
-        self.assertNotIn("results", response)
+        # Fail inside the shared storage step used by single and batched ingestion.
+        for error in (RuntimeError("secret internal connection details"),
+                      sqlite3.OperationalError("secret internal connection details")):
+            def failed(*_, error=error):
+                raise error
+            self.server.ledger._ingest_prepared = failed
+            status, response = self.request({"records": [self.record(), self.record(external_id="second")]})
+            self.assertEqual(status, 500)
+            self.assertNotIn("secret", json.dumps(response))
+            self.assertNotIn("results", response)
+        del self.server.ledger._ingest_prepared
+        self.assertEqual(self.server.ledger.snapshot()["sources"], [])
+
+    def test_batched_request_reports_each_record_and_keeps_valid_ones(self):
+        records = [self.record(), "not an object", self.record(external_id="bad", amount="NaN"), self.record(external_id="second", merchant="書店")]
+        status, response = self.request({"records": records})
+        self.assertEqual(status, 200)
+        self.assertEqual([item["ok"] for item in response["results"]], [True, False, False, True])
+        self.assertEqual(response["results"][1]["error"], "Record must be an object")
+        self.assertEqual(response["results"][3]["external_id"], "second")
+        self.assertEqual(len(response["entries"]), 2)
 
     def test_token_persists_and_invalid_file_does_not_silently_rotate(self):
         self.assertEqual(load_or_create_token(self.path / "token.txt"), self.token)

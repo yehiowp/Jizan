@@ -55,6 +55,18 @@ class FileTransferTests(unittest.TestCase):
         self.assertEqual(len(result["records"]), 1)
         self.assertEqual(self.ledger.snapshot()["entries"][0]["amount_minor"], 12000)
 
+    def test_preview_compares_stored_phone_sources_without_a_full_snapshot(self):
+        from unittest.mock import patch
+        self.ledger.ingest(record())
+        # Same identifier from a non-phone source must not be confused with a phone record.
+        self.ledger.ingest(dict(record(external_id="shared-id", amount="77"), source="gmail"))
+        with patch.object(Ledger, "snapshot", side_effect=AssertionError("preview must use the lean source lookup")):
+            result = preview_transfer(envelope(record(), record(amount="121.00"), record(external_id="shared-id", amount="30")), self.ledger)
+        self.assertTrue(result["rows"][0]["duplicate"])
+        self.assertIn("不能覆蓋", result["rows"][1]["error"])
+        self.assertFalse(result["rows"][2]["duplicate"])
+        self.assertEqual(len(result["records"]), 2)
+
     def test_conflicting_rows_within_same_file_are_reported(self):
         result = preview_transfer(envelope(record(), record(amount="999"), record()), self.ledger)
         self.assertEqual(len(result["records"]), 2)

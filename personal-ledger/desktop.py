@@ -89,6 +89,16 @@ def seed_demo(ledger: Ledger) -> None:
         ledger.ingest(transaction)
 
 
+def _background_job(worker, results: queue.Queue) -> None:
+    """Thread body: holds only the worker and the queue, never a Tk object."""
+    try:
+        outcome = (True, worker())
+    except Exception as error:
+        outcome = (False, str(error))
+    del worker
+    results.put(outcome)
+
+
 class LedgerApp(ttk.Frame):
     def __init__(self, root: tk.Tk | tk.Toplevel, database: Path, demo: bool = False):
         super().__init__(root, padding=0)
@@ -98,11 +108,16 @@ class LedgerApp(ttk.Frame):
         self.demo = demo
         self.data: dict[str, Any] = {}
         self.results: queue.Queue = queue.Queue()
+        self._job: tuple | None = None
         self.busy = False
         self.worker_buttons: list[ttk.Button] = []
         self.preview_records: list[dict] = []
         self.transfer_errors: list[dict] = []
         self.review_map: dict[str, dict] = {}
+        self.entry_rows: list[tuple[str, tuple, str | None, str]] = []
+        self.sources_by_entry: dict[str, list[dict]] = {}
+        self._data_token = None
+        self._search_id = None
         self.sync_server = None
         self.sync_thread = None
         self._closed = False
@@ -223,10 +238,25 @@ class LedgerApp(ttk.Frame):
         return tree
 
     @staticmethod
-    def _fill(tree: ttk.Treeview, rows: list[tuple[str, tuple, str | None]]) -> None:
+    def _fill(tree: ttk.Treeview, rows: list[tuple[str, tuple, str | None]], keep_view: bool = True) -> None:
+        """Show rows. Unchanged content is left alone; otherwise selection and scroll survive.
+
+        Background refreshes (every minute, after Gmail or quote jobs) must not
+        throw away what the user selected or scroll the list back to the top.
+        """
+        if getattr(tree, "_rendered_rows", None) == rows:
+            return
+        selected = tree.selection()
+        top = tree.yview()[0]
         tree.delete(*tree.get_children())
         for index, (iid, values, tag) in enumerate(rows):
             tree.insert("", "end", iid=iid, values=values, tags=tuple(t for t in ("odd" if index % 2 else "", tag) if t))
+        tree._rendered_rows = rows
+        kept = [iid for iid in selected if tree.exists(iid)]
+        if kept:
+            tree.selection_set(kept)
+        if keep_view:
+            tree.yview_moveto(top)
 
     def _ledger_tab(self) -> None:
         frame = self.tabs["ledger"]
@@ -240,7 +270,7 @@ class LedgerApp(ttk.Frame):
         search = ttk.Entry(bar, textvariable=self.search, width=24)
         search.pack(side="right", padx=12)
         ttk.Label(bar, text="搜尋商家／帳戶／分類", style="Muted.TLabel").pack(side="right")
-        self.search.trace_add("write", lambda *_: self._render_entries())
+        self.search.trace_add("write", lambda *_: self._schedule_search())
         self.entries_tree = self._tree(frame, [("time", "交易時間", 150), ("merchant", "商家／摘要", 180), ("amount", "金額", 150), ("kind", "類型", 65), ("account", "帳戶", 110), ("category", "分類", 85), ("status", "核對狀態", 100)])
         self.entries_tree.bind("<<TreeviewSelect>>", self._show_entry)
         self.entry_detail = tk.StringVar(value="選取一筆帳目，可查看關聯通知與識別碼。")
@@ -433,7 +463,12 @@ class LedgerApp(ttk.Frame):
 
     def refresh(self) -> None:
         try:
+            # Read the token first: a commit landing during the snapshot then
+            # shows up as a newer token and triggers the next automatic refresh.
+            token = self.ledger.change_token()
             self.data = self.ledger.snapshot()
+            self._data_token = token
+            self._prepare_entries()
             self._render_entries()
             self._render_reviews()
             self._render_portfolio()
@@ -449,25 +484,60 @@ class LedgerApp(ttk.Frame):
         except Exception as error:
             self.error(error)
 
-    def _render_entries(self) -> None:
+    def _prepare_entries(self) -> None:
+        """Format every entry once per data load; searching then only filters."""
+        inverse_kind = {value: key for key, value in KINDS.items()}
+        self.entry_rows = []
+        for entry in self.data.get("entries", []):
+            values = (format_record_time(entry), entry.get("merchant") or "—", money(entry.get("amount_minor"), entry.get("currency", "TWD")), inverse_kind.get(entry.get("kind"), "投資"), entry.get("account", "—"), entry.get("category") or "未分類", STATUS.get(entry.get("status"), entry.get("status", "—")))
+            haystack = " ".join(str(entry.get(key, "")) for key in ("merchant", "account", "category", "currency")).casefold()
+            self.entry_rows.append((str(entry["id"]), values, "pending" if entry.get("status") == "pending" else None, haystack))
+        self.sources_by_entry = {}
+        for source in self.data.get("sources", []):
+            if source.get("entry_id") is not None:
+                self.sources_by_entry.setdefault(str(source["entry_id"]), []).append(source)
+
+    def _schedule_search(self) -> None:
+        """Filter shortly after typing stops instead of rebuilding the table per keystroke."""
+        if self._closed:
+            return
+        if self._search_id is not None:
+            self.root.after_cancel(self._search_id)
+        self._search_id = self.root.after(150, self._apply_search)
+
+    def _apply_search(self) -> None:
+        self._search_id = None
+        if not self._closed:
+            self._render_entries(keep_view=False)
+
+    def _refresh_if_changed(self) -> None:
+        """Reload only when a writer (sync service, background job) changed the ledger.
+
+        An idle check costs one small file read instead of reloading and
+        redrawing every table. Explicit user actions always call refresh().
+        """
+        token = self.ledger.change_token()
+        if token is None or token != self._data_token:
+            self.refresh()
+        else:
+            self._gmail_status()
+
+    def _render_entries(self, keep_view: bool = True) -> None:
         if not hasattr(self, "entries_tree"):
             return
         query = self.search.get().casefold().strip()
-        entries = self.data.get("entries", [])
-        filtered = [entry for entry in entries if not query or query in " ".join(str(entry.get(key, "")) for key in ("merchant", "account", "category", "currency")).casefold()]
-        rows = []
-        inverse_kind = {value: key for key, value in KINDS.items()}
-        for entry in filtered:
-            rows.append((str(entry["id"]), (format_record_time(entry), entry.get("merchant") or "—", money(entry.get("amount_minor"), entry.get("currency", "TWD")), inverse_kind.get(entry.get("kind"), "投資"), entry.get("account", "—"), entry.get("category") or "未分類", STATUS.get(entry.get("status"), entry.get("status", "—"))), "pending" if entry.get("status") == "pending" else None))
-        self._fill(self.entries_tree, rows)
-        self.empty_label.configure(text=f"顯示 {len(filtered)} / {len(entries)} 筆；各幣別分開統計，頁首優先顯示 TWD。" if entries else "帳本還沒有交易。可新增帳目、匯入通知，或開啟獨立示範帳本。")
+        rows = [(iid, values, tag) for iid, values, tag, haystack in self.entry_rows if not query or query in haystack]
+        self._fill(self.entries_tree, rows, keep_view=keep_view)
+        total = len(self.entry_rows)
+        self.empty_label.configure(text=f"顯示 {len(rows)} / {total} 筆；各幣別分開統計，頁首優先顯示 TWD。" if total else "帳本還沒有交易。可新增帳目、匯入通知，或開啟獨立示範帳本。")
 
     def _show_entry(self, _event=None) -> None:
         selection = self.entries_tree.selection()
         if not selection:
+            self.entry_detail.set("選取一筆帳目，可查看關聯通知與識別碼。")
             return
         entry_id = selection[0]
-        sources = [source for source in self.data.get("sources", []) if str(source.get("entry_id")) == entry_id]
+        sources = self.sources_by_entry.get(entry_id, [])
         descriptions = [f"{SOURCE.get(s.get('source'), s.get('source'))} ({s.get('external_id')})" for s in sources]
         self.entry_detail.set(f"帳目 ID：{entry_id}\n關聯來源：{'；'.join(descriptions) if descriptions else '沒有關聯來源'}")
 
@@ -482,16 +552,20 @@ class LedgerApp(ttk.Frame):
         self._fill(self.review_tree, rows)
         self.review_detail.set("選取待確認事項後，檢查兩個來源再選擇處理方式。" if rows else "目前沒有待確認事項。金額、幣別或配對有差異時會列在這裡。")
 
-    def _selected_review(self) -> dict | None:
+    def _selected_review(self, quiet: bool = False) -> dict | None:
         selection = self.review_tree.selection()
         if not selection:
-            self.status.set("請先選取一筆待確認事項。")
+            if not quiet:
+                self.status.set("請先選取一筆待確認事項。")
             return None
         return self.review_map.get(selection[0])
 
     def _show_review(self, _event=None) -> None:
-        review = self._selected_review()
+        # Selection events also fire when a refresh removes the selected row;
+        # that must not replace the result message of the action just taken.
+        review = self._selected_review(quiet=True)
         if not review:
+            self.review_detail.set("選取待確認事項後，檢查兩個來源再選擇處理方式。" if self.review_map else "目前沒有待確認事項。金額、幣別或配對有差異時會列在這裡。")
             return
         source, entry = review.get("source") or {}, review.get("entry") or {}
         details = [f"原帳目：{entry.get('merchant', '未配對')} · {entry.get('account', '—')} · {format_record_time(entry)} · {money(entry.get('amount_minor'), entry.get('currency', 'TWD'))}",
@@ -591,7 +665,7 @@ class LedgerApp(ttk.Frame):
             return
         entry = next(item for item in self.data.get("entries", []) if str(item["id"]) == selection[0])
         fields = [("merchant", "商家／摘要", entry.get("merchant", "")), ("category", "分類", entry.get("category") or "未分類"), ("note", "備註", entry.get("note") or "")]
-        linked = [source for source in self.data.get("sources", []) if source.get("entry_id") == entry["id"]]
+        linked = self.sources_by_entry.get(str(entry["id"]), [])
         if len(linked) <= 1:
             amount = Decimal(entry["amount_minor"]) / (10 ** CURRENCY_DIGITS.get(entry["currency"], 2))
             fields.append(("amount", "金額（" + entry["currency"] + "）", str(amount)))
@@ -810,13 +884,24 @@ class LedgerApp(ttk.Frame):
             return
         results, errors = [], []
         preview_errors = [f"原始第 {error['index']} 筆未匯入：{error['error']}" for error in self.transfer_errors]
-        for index, record in enumerate(self.preview_records, 1):
-            try:
-                result = self.ledger.ingest(record)
+        try:
+            # One commit per chunk instead of one per record; each record is still
+            # validated, reconciled and reported on its own.
+            outcomes = self.ledger.ingest_many(self.preview_records)
+        except Exception:
+            outcomes = []
+            for record in self.preview_records:
+                try:
+                    outcomes.append({"ok": True, "result": self.ledger.ingest(record)})
+                except Exception as error:
+                    outcomes.append({"ok": False, "error": error})
+        for index, outcome in enumerate(outcomes, 1):
+            if outcome["ok"]:
+                result = outcome["result"]
                 description = "相同來源已匯入，未重複記帳" if result.get("duplicate") else {"pending": "已列為待確認", "verified": "已完成核對", "unverified": "已入帳，尚未核對"}.get(result.get("status"), "已處理")
                 results.append(f"第 {index} 筆：{description}")
-            except Exception as error:
-                errors.append(f"第 {index} 筆失敗：{error}")
+            else:
+                errors.append(f"第 {index} 筆失敗：{outcome['error']}" + ("（儲存未完成，可重新匯入，不會重複記帳）" if outcome.get("retryable") else ""))
         self.preview_records = []
         self.transfer_errors = []
         self.import_button.configure(state="disabled")
@@ -825,34 +910,43 @@ class LedgerApp(ttk.Frame):
         self.status.set(f"匯入完成：{len(results)} 筆已處理，{len(errors) + len(preview_errors)} 筆未匯入。重複交易不會再次入帳。")
 
     def _run_job(self, label: str, worker, done=None, quiet: bool = False) -> None:
+        """Run ``worker`` on a background thread; ``done`` runs on the Tk thread afterwards.
+
+        ``worker`` must not reference this window or any widget. The thread only
+        receives the worker and the result queue; ``done`` stays on the Tk side.
+        If the thread held the window, it could drop the last reference after the
+        window closed and Tk would be torn down from the wrong thread, which
+        aborts the whole program ("Tcl_AsyncDelete: async handler deleted by the
+        wrong thread").
+        """
         if self.busy:
             self.status.set("已有工作執行中，請等候完成。")
             return
         self.busy = True
+        self._job = (done, quiet)
         self.status.set(label)
         self.progress.start(12)
         for button in self.worker_buttons:
             button.configure(state="disabled")
-        def run():
-            try:
-                self.results.put((True, worker(), done, quiet))
-            except Exception as error:
-                self.results.put((False, str(error), None, quiet))
-        threading.Thread(target=run, daemon=True).start()
+        threading.Thread(target=_background_job, args=(worker, self.results), daemon=True).start()
 
     def _poll_results(self) -> None:
         if self._closed:
             return
         try:
-            success, result, done, quiet = self.results.get_nowait()
+            success, result = self.results.get_nowait()
         except queue.Empty:
             pass
         else:
+            done, quiet = self._job or (None, False)
+            self._job = None
+            if not success:
+                done = None
             self.busy = False
             self.progress.stop()
             for button in self.worker_buttons:
                 button.configure(state="normal")
-            self.refresh()
+            self._refresh_if_changed()
             if success:
                 if done:
                     done(result)
@@ -876,7 +970,8 @@ class LedgerApp(ttk.Frame):
 
     def connect_gmail(self) -> None:
         from integrations import connect_gmail
-        self._run_job("正在開啟 Google 唯讀授權，請在瀏覽器完成登入…", lambda: connect_gmail(self.gmail_config), lambda result: self.status.set(result.get("message", "Gmail 授權工作已結束。")))
+        config = self.gmail_config
+        self._run_job("正在開啟 Google 唯讀授權，請在瀏覽器完成登入…", lambda: connect_gmail(config), lambda result: self.status.set(result.get("message", "Gmail 授權工作已結束。")))
 
     def sync_gmail(self, automatic: bool = False) -> None:
         if automatic and (self.demo or self.busy or not self.auto_gmail.get()):
@@ -914,7 +1009,8 @@ class LedgerApp(ttk.Frame):
             self._set_output("\n".join(lines) or "Gmail 同步完成，沒有需要人工處理的郵件。")
             if result.get("pending") or result.get("errors"):
                 self.notebook.select(self.tabs["import"])
-        self._run_job("正在讀取符合篩選條件的 Gmail 通知…", lambda: sync_gmail(self.ledger, self.gmail_config), done, quiet=automatic)
+        ledger, config = self.ledger, self.gmail_config
+        self._run_job("正在讀取符合篩選條件的 Gmail 通知…", lambda: sync_gmail(ledger, config), done, quiet=automatic)
 
     def configure_gmail(self) -> None:
         existing = self._read_json(self.gmail_config)
@@ -949,7 +1045,8 @@ class LedgerApp(ttk.Frame):
                 text += " " + "；".join(str(error) for error in errors)
             self.asset_status.set(text)
             self.status.set(text)
-        self._run_job("正在更新行情；離線時會保留最後報價…", lambda: update_quotes(self.ledger), done, quiet=automatic)
+        ledger = self.ledger
+        self._run_job("正在更新行情；離線時會保留最後報價…", lambda: update_quotes(ledger), done, quiet=automatic)
 
     def save_settings(self) -> None:
         self.settings["auto_quotes"] = self.auto_quotes.get()
@@ -961,13 +1058,16 @@ class LedgerApp(ttk.Frame):
     def _auto_refresh(self) -> None:
         if self._closed:
             return
-        self.refresh()
+        self._refresh_if_changed()
         ticks = getattr(self, "_minute_ticks", 0) + 1
         self._minute_ticks = ticks
         if ticks % 15 == 0 and self.auto_quotes.get():
             self.update_quotes(automatic=True)
         if ticks % 5 == 0:
-            self.sync_gmail(automatic=True)
+            # Every third round coincides with the quote update above; wait for
+            # it to finish instead of silently skipping that Gmail sync.
+            self.root.after_cancel(self._startup_gmail_id)
+            self._startup_gmail()
         self._auto_id = self.root.after(60000, self._auto_refresh)
 
     def _startup_quotes(self) -> None:
@@ -1038,8 +1138,9 @@ class LedgerApp(ttk.Frame):
 
     def close(self) -> None:
         self._closed = True
-        for callback in (self._poll_id, self._auto_id, self._startup_id, self._startup_gmail_id):
-            self.root.after_cancel(callback)
+        for callback in (self._poll_id, self._auto_id, self._startup_id, self._startup_gmail_id, self._search_id):
+            if callback is not None:
+                self.root.after_cancel(callback)
         if self.sync_server is not None:
             self.sync_server.shutdown()
             self.sync_server.server_close()

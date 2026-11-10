@@ -1,1 +1,1 @@
-{"name":"personal-ledger-pocket","private":true,"version":"1.0.0","type":"module","scripts":{"prepare-site":"node prepare.mjs","test":"node --test test_core.mjs test_dom.mjs test_sw.mjs"},"devDependencies":{"fake-indexeddb":"^6.2.4","jsdom":"^26.1.0"}}
+{"name":"personal-ledger-pocket","private":true,"version":"1.0.0","type":"module","scripts":{"prepare-site":"node prepare.mjs","test":"node --test test_core.mjs test_dom.mjs test_sw.mjs","test:browser":"node e2e_browser.cjs"},"devDependencies":{"fake-indexeddb":"^6.2.4","jsdom":"^26.1.0"}}

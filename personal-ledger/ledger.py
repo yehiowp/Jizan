@@ -84,6 +84,11 @@ def text_value(value, label, maximum=200, optional=False) -> str:
     return value.strip()
 
 
+def _plain(value: Decimal) -> str:
+    """Exact decimal text without exponent notation (a sold-out 0E-8 reads as 0.00000000)."""
+    return format(value, 'f')
+
+
 def merchant_key(value) -> str:
     value = unicodedata.normalize('NFKC', value or '').casefold()
     return ''.join(c for c in value if c.isalnum())
@@ -102,6 +107,12 @@ def _original_date(value):
 
 def _source_metadata(source):
     """Expose only validated display metadata from retained source provenance."""
+    date_only = source.get('time_precision') == 'day'
+    statement = source.get('source') == 'statement'
+    if not date_only and not statement:
+        # Nothing below applies; skip parsing the stored payload for the
+        # common case (precise Apple Pay / Gmail / manual records).
+        return {}
     try:
         payload = json.loads(source.get('payload_json') or '{}')
         provenance = payload.get('provenance', {}) if isinstance(payload, dict) else {}
@@ -110,11 +121,11 @@ def _source_metadata(source):
     if not isinstance(provenance, dict):
         provenance = {}
     metadata = {}
-    if source.get('time_precision') == 'day':
+    if date_only:
         original_date = _original_date(provenance.get('transaction_date'))
         if original_date:
             metadata['transaction_date'] = original_date
-    if source.get('source') == 'statement':
+    if statement:
         posting_date = _original_date(provenance.get('posting_date'))
         if posting_date:
             metadata['posting_date'] = posting_date
@@ -233,7 +244,9 @@ class Ledger:
         status = 'pending' if pending else ('verified' if confirmed or len(sources) > 1 or 'manual' in sources else 'unverified')
         connection.execute('UPDATE entries SET status=?,revision=revision+1,updated_at=? WHERE id=?', (status, now(), entry_id))
 
-    def ingest(self, payload):
+    @staticmethod
+    def _prepare_ingest(payload):
+        """Validate and normalise one source record without touching storage."""
         if not isinstance(payload, dict):
             raise ValueError('交易必須是 JSON 物件')
         source = text_value(payload.get('source'), '來源')
@@ -254,7 +267,6 @@ class Ledger:
         precision = payload.get('time_precision', payload.get('date_precision', 'minute'))
         if precision not in {'minute','second','day'}:
             raise ValueError('時間精度無效')
-        force_review = bool(payload.get('force_review', False))
         normalized = {'source':source, 'external_id':external_id, 'currency':currency,
                       'amount_minor':amount, 'account':account, 'merchant':merchant,
                       'kind':kind, 'category':category, 'occurred_at':occurred_at,
@@ -265,91 +277,153 @@ class Ledger:
         stored_payload = dict(normalized)
         if provenance is not None:
             stored_payload['provenance'] = provenance
-        fingerprint = hashlib.sha256(json.dumps(normalized, ensure_ascii=False, sort_keys=True).encode()).hexdigest()
+        return {'source':source, 'external_id':external_id, 'currency':currency, 'amount':amount,
+                'account':account, 'merchant':merchant, 'kind':kind, 'category':category,
+                'occurred_at':occurred_at, 'precision':precision,
+                'force_review':bool(payload.get('force_review', False)),
+                'source_timezone':str(payload.get('source_timezone',''))[:100],
+                'payload_json':json.dumps(stored_payload, ensure_ascii=False),
+                'fingerprint':hashlib.sha256(json.dumps(normalized, ensure_ascii=False, sort_keys=True).encode()).hexdigest()}
+
+    def _ingest_prepared(self, connection, prepared):
+        """Store and reconcile one validated record inside the caller's write transaction."""
+        source, external_id = prepared['source'], prepared['external_id']
+        currency, amount, account = prepared['currency'], prepared['amount'], prepared['account']
+        merchant, kind, occurred_at = prepared['merchant'], prepared['kind'], prepared['occurred_at']
+        precision, force_review, fingerprint = prepared['precision'], prepared['force_review'], prepared['fingerprint']
+        existing = connection.execute('SELECT * FROM source_records WHERE source=? AND external_id=?', (source, external_id)).fetchone()
+        if existing:
+            if existing['fingerprint'] and existing['fingerprint'] != fingerprint:
+                raise ValueError('相同來源識別碼的內容不同，請先人工確認，不能覆蓋原紀錄')
+            review = connection.execute('SELECT id FROM review_items WHERE source_record_id=? AND resolved_at IS NULL', (existing['id'],)).fetchone()
+            entry = self._entry(connection, existing['entry_id'])
+            return {'source_record_id':existing['id'], 'entry_id':existing['entry_id'], 'duplicate':True,
+                    'review_id': review['id'] if review else None, 'status':entry['status'] if entry else 'pending'}
+        account_id = self._account(connection, account, currency)
+        source_id = uid()
+        connection.execute('INSERT INTO source_records(id,source,external_id,amount_minor,currency,merchant,occurred_at,received_at,source_timezone,account_id,kind,category,payload_json,fingerprint,time_precision) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)',
+            (source_id,source,external_id,amount,currency,merchant,occurred_at,now(),prepared['source_timezone'],
+             account_id,kind,prepared['category'],prepared['payload_json'],fingerprint,precision))
+        record = dict(connection.execute('SELECT * FROM source_records WHERE id=?', (source_id,)).fetchone())
+        candidates = []
+        uncertain_candidates = []
+        # Account identity must agree; currency changes are surfaced for manual review.
+        if source != 'manual':
+            window = 3*86400 if source == 'statement' or precision == 'day' else 10*60
+            # Coarse SQL range (padded by one day) searches the entry_match index instead of
+            # reading the account's whole history; the exact window is checked below.
+            # Accounts sharing this name (one per currency) are resolved first so the
+            # index is searched by account, kind and time rather than scanned.
+            center = datetime.fromisoformat(occurred_at)
+            padding = timedelta(seconds=window, days=1)
+            account_ids = [row[0] for row in connection.execute('SELECT id FROM accounts WHERE name=?', (account,))]
+            nearby = (f'FROM entries e WHERE e.account_id IN ({",".join("?"*len(account_ids))}) AND e.kind=? '
+                      'AND e.deleted_at IS NULL AND e.occurred_at BETWEEN ? AND ?')
+            bounds = (*account_ids, kind, (center-padding).isoformat(timespec='microseconds'), (center+padding).isoformat(timespec='microseconds'))
+            rows = connection.execute('SELECT e.*,? AS account ' + nearby + ' ORDER BY e.occurred_at,e.id', (account, *bounds)).fetchall()
+            links = defaultdict(list)
+            if rows:
+                # One lookup for every nearby entry's sources instead of one query per entry.
+                for link in connection.execute('SELECT s.entry_id,s.source,s.merchant FROM source_records s WHERE s.entry_id IN (SELECT e.id ' + nearby + ')', bounds):
+                    links[link['entry_id']].append(link)
+            for row in rows:
+                linked = links[row['id']]
+                known_merchants = {merchant_key(row['merchant'])} | {merchant_key(s['merchant']) for s in linked}
+                delta = abs((datetime.fromisoformat(row['occurred_at'])-center).total_seconds())
+                linked_sources = {s['source'] for s in linked}
+                if delta <= window:
+                    candidate = dict(row)
+                    candidate['_same_source'] = source in linked_sources
+                    if merchant_key(merchant) in known_merchants:
+                        candidates.append(candidate)
+                    elif source in {'gmail','bank','statement'} and linked_sources & {'apple_pay','manual'}:
+                        # Bank merchant descriptors often differ. Suggest a
+                        # nearby transaction, never silently count it twice
+                        # or automatically merge on amount alone.
+                        candidate['_merchant_uncertain'] = True
+                        uncertain_candidates.append(candidate)
+        if not candidates:
+            candidates = uncertain_candidates
+        entry_id = None
+        reason = None
+        if len(candidates) == 1:
+            candidate = candidates[0]
+            entry_id = candidate['id']
+            connection.execute('UPDATE source_records SET entry_id=? WHERE id=?', (entry_id, source_id))
+            if candidate['_same_source']:
+                reason = 'possible_duplicate'
+            elif candidate.get('_merchant_uncertain'):
+                reason = 'merchant_mismatch'
+            elif candidate['currency'] != currency:
+                reason = 'currency_mismatch'
+            elif candidate['amount_minor'] != amount:
+                reason = 'amount_mismatch'
+            elif precision == 'day':
+                reason = 'time_uncertain'
+            elif force_review:
+                reason = 'manual_confirmation'
+        elif len(candidates) > 1:
+            reason = 'ambiguous_match'
+        elif force_review or source == 'statement':
+            reason = 'missing_entry' if source == 'statement' else 'manual_confirmation'
+        else:
+            entry_id = self._create_entry(connection, record)
+        review_id = None
+        if reason:
+            review_id = uid()
+            connection.execute('INSERT INTO review_items(id,entry_id,source_record_id,reason,created_at,candidate_ids_json) VALUES(?,?,?,?,?,?)',
+                               (review_id,entry_id,source_id,reason,now(),json.dumps([c['id'] for c in candidates])))
+        if entry_id:
+            self._refresh_status(connection, entry_id)
+        result = {'source_record_id':source_id, 'entry_id':entry_id, 'review_id':review_id, 'duplicate':False,
+                  'status': 'pending' if reason else self._entry(connection, entry_id)['status']}
+        self._audit(connection,'ingest',source_id,None,result)
+        return result
+
+    def ingest(self, payload):
+        prepared = self._prepare_ingest(payload)
         with self._connection(write=True) as connection:
-            existing = connection.execute('SELECT * FROM source_records WHERE source=? AND external_id=?', (source, external_id)).fetchone()
-            if existing:
-                if existing['fingerprint'] and existing['fingerprint'] != fingerprint:
-                    raise ValueError('相同來源識別碼的內容不同，請先人工確認，不能覆蓋原紀錄')
-                review = connection.execute('SELECT id FROM review_items WHERE source_record_id=? AND resolved_at IS NULL', (existing['id'],)).fetchone()
-                entry = self._entry(connection, existing['entry_id'])
-                return {'source_record_id':existing['id'], 'entry_id':existing['entry_id'], 'duplicate':True,
-                        'review_id': review['id'] if review else None, 'status':entry['status'] if entry else 'pending'}
-            account_id = self._account(connection, account, currency)
-            source_id = uid()
-            connection.execute('INSERT INTO source_records(id,source,external_id,amount_minor,currency,merchant,occurred_at,received_at,source_timezone,account_id,kind,category,payload_json,fingerprint,time_precision) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)',
-                (source_id,source,external_id,amount,currency,merchant,occurred_at,now(),str(payload.get('source_timezone',''))[:100],
-                 account_id,kind,category,json.dumps(stored_payload, ensure_ascii=False),fingerprint,precision))
-            record = dict(connection.execute('SELECT * FROM source_records WHERE id=?', (source_id,)).fetchone())
-            candidates = []
-            uncertain_candidates = []
-            # Account identity must agree; currency changes are surfaced for manual review.
-            if source != 'manual':
-                window = 3*86400 if source == 'statement' or precision == 'day' else 10*60
-                # Coarse SQL range (padded by one day) uses the entry_match index instead of
-                # scanning the account's whole history; the exact window is checked below.
-                center = datetime.fromisoformat(occurred_at)
-                padding = timedelta(seconds=window, days=1)
-                rows = connection.execute('SELECT e.*,a.name AS account FROM entries e JOIN accounts a ON a.id=e.account_id WHERE a.name=? AND e.kind=? AND e.deleted_at IS NULL AND e.occurred_at BETWEEN ? AND ?',
-                                          (account,kind,(center-padding).isoformat(timespec='microseconds'),(center+padding).isoformat(timespec='microseconds'))).fetchall()
-                links = defaultdict(list)
-                if rows:
-                    ids = [row['id'] for row in rows]
-                    for link in connection.execute(f'SELECT entry_id,source,merchant FROM source_records WHERE entry_id IN ({",".join("?"*len(ids))})', ids):
-                        links[link['entry_id']].append(link)
-                for row in rows:
-                    linked = links[row['id']]
-                    known_merchants = {merchant_key(row['merchant'])} | {merchant_key(s['merchant']) for s in linked}
-                    delta = abs((datetime.fromisoformat(row['occurred_at'])-datetime.fromisoformat(occurred_at)).total_seconds())
-                    linked_sources = {s['source'] for s in linked}
-                    if delta <= window:
-                        candidate = dict(row)
-                        candidate['_same_source'] = source in linked_sources
-                        if merchant_key(merchant) in known_merchants:
-                            candidates.append(candidate)
-                        elif source in {'gmail','bank','statement'} and linked_sources & {'apple_pay','manual'}:
-                            # Bank merchant descriptors often differ. Suggest a
-                            # nearby transaction, never silently count it twice
-                            # or automatically merge on amount alone.
-                            candidate['_merchant_uncertain'] = True
-                            uncertain_candidates.append(candidate)
-            if not candidates:
-                candidates = uncertain_candidates
-            entry_id = None
-            reason = None
-            if len(candidates) == 1:
-                candidate = candidates[0]
-                entry_id = candidate['id']
-                connection.execute('UPDATE source_records SET entry_id=? WHERE id=?', (entry_id, source_id))
-                if candidate['_same_source']:
-                    reason = 'possible_duplicate'
-                elif candidate.get('_merchant_uncertain'):
-                    reason = 'merchant_mismatch'
-                elif candidate['currency'] != currency:
-                    reason = 'currency_mismatch'
-                elif candidate['amount_minor'] != amount:
-                    reason = 'amount_mismatch'
-                elif precision == 'day':
-                    reason = 'time_uncertain'
-                elif force_review:
-                    reason = 'manual_confirmation'
-            elif len(candidates) > 1:
-                reason = 'ambiguous_match'
-            elif force_review or source == 'statement':
-                reason = 'missing_entry' if source == 'statement' else 'manual_confirmation'
-            else:
-                entry_id = self._create_entry(connection, record)
-            review_id = None
-            if reason:
-                review_id = uid()
-                connection.execute('INSERT INTO review_items(id,entry_id,source_record_id,reason,created_at,candidate_ids_json) VALUES(?,?,?,?,?,?)',
-                                   (review_id,entry_id,source_id,reason,now(),json.dumps([c['id'] for c in candidates])))
-            if entry_id:
-                self._refresh_status(connection, entry_id)
-            result = {'source_record_id':source_id, 'entry_id':entry_id, 'review_id':review_id, 'duplicate':False,
-                      'status': 'pending' if reason else self._entry(connection, entry_id)['status']}
-            self._audit(connection,'ingest',source_id,None,result)
-            return result
+            return self._ingest_prepared(connection, prepared)
+
+    def ingest_many(self, payloads, chunk_size=200):
+        """Ingest records in order, committing once per chunk instead of once per record.
+
+        Every record keeps the rules of ``ingest`` and is isolated by a
+        savepoint, so one rejected record never affects its neighbours. Returns
+        one outcome per payload, in order: ``{'ok': True, 'result': ...}`` or
+        ``{'ok': False, 'error': exception}``. A storage failure rolls back the
+        current chunk only; its records and all later ones are reported with
+        ``'retryable': True`` and nothing is half-written. Earlier chunks stay
+        committed, and replaying the same records is safe through deduplication.
+        """
+        payloads = list(payloads)
+        outcomes = []
+        size = max(1, int(chunk_size))
+        for start in range(0, len(payloads), size):
+            chunk = []
+            try:
+                with self._connection(write=True) as connection:
+                    for payload in payloads[start:start+size]:
+                        try:
+                            prepared = self._prepare_ingest(payload)
+                            connection.execute('SAVEPOINT ingest_record')
+                            try:
+                                result = self._ingest_prepared(connection, prepared)
+                            except BaseException:
+                                connection.execute('ROLLBACK TO ingest_record')
+                                connection.execute('RELEASE ingest_record')
+                                raise
+                            connection.execute('RELEASE ingest_record')
+                            chunk.append({'ok':True, 'result':result})
+                        except (ValueError, TypeError, KeyError) as error:
+                            chunk.append({'ok':False, 'error':error})
+            except (sqlite3.Error, OSError) as error:
+                # The chunk's transaction was rolled back as a whole.
+                remaining = len(payloads) - len(outcomes)
+                outcomes.extend({'ok':False, 'error':error, 'retryable':True} for _ in range(remaining))
+                return outcomes
+            outcomes.extend(chunk)
+        return outcomes
 
     def resolve_review(self, review_id, action, entry_id=None):
         if action not in {'use_source','keep_entry','separate','link','ignore'}:
@@ -492,7 +566,14 @@ class Ledger:
                 p['_quantity'] += quantity
                 p['_cost'] += cash + fee
             elif event['kind'] in {'sell','transfer_out'}:
-                removed_cost = p['_cost'] * quantity / p['_quantity'] if p['_quantity'] else Decimal('0')
+                if not p['_quantity']:
+                    removed_cost = Decimal('0')
+                elif quantity == p['_quantity']:
+                    # Closing the position releases its whole cost exactly; the
+                    # average-cost division would leave a 1E-26 rounding residue.
+                    removed_cost = p['_cost']
+                else:
+                    removed_cost = p['_cost'] * quantity / p['_quantity']
                 p['_quantity'] -= quantity
                 p['_cost'] -= removed_cost
                 if event['kind'] == 'sell':
@@ -500,21 +581,67 @@ class Ledger:
             elif event['kind'] == 'dividend':
                 p['_dividend'] += cash - fee
         result = []
+        quotes_by_instrument = defaultdict(list)
+        for quote in quotes:
+            quotes_by_instrument[quote['instrument_id']].append(quote)
         for p in positions.values():
             # Prefer quote in position currency, otherwise expose value in quoted currency only.
-            available = [q for q in quotes if q['instrument_id'] == p['instrument_id']]
+            available = quotes_by_instrument[p['instrument_id']]
             local = [q for q in available if q['currency'] == p['currency']]
             quote = max(local or available,key=lambda q:q['as_of']) if available else None
             q = p.pop('_quantity'); cost = p.pop('_cost')
             realized = p.pop('_realized'); dividend = p.pop('_dividend')
             value = q * Decimal(quote['price_decimal']) if quote else None
-            p.update(quantity_decimal=str(q),cost_decimal=str(cost),realized_decimal=str(realized),dividend_decimal=str(dividend),
+            p.update(quantity_decimal=_plain(q),cost_decimal=_plain(cost),realized_decimal=_plain(realized),dividend_decimal=_plain(dividend),
                 price_decimal=quote['price_decimal'] if quote else None, quote_currency=quote['currency'] if quote else None,
                 quote_as_of=quote['as_of'] if quote else None, quote_provider=quote['provider'] if quote else None,
-                quote_type=quote['quote_type'] if quote else None,value_decimal=str(value) if value is not None else None,
-                unrealized_decimal=str(value-cost) if value is not None and quote['currency'] == p['currency'] else None)
+                quote_type=quote['quote_type'] if quote else None,value_decimal=_plain(value) if value is not None else None,
+                unrealized_decimal=_plain(value-cost) if value is not None and quote['currency'] == p['currency'] else None)
             result.append(p)
         return result
+
+    @staticmethod
+    def _asset_rows(connection):
+        events = [dict(r) for r in connection.execute('SELECT e.*,i.symbol,i.market,i.kind AS instrument_kind,a.name AS account FROM asset_events e JOIN instruments i ON i.id=e.instrument_id JOIN accounts a ON a.id=e.account_id ORDER BY e.occurred_at,e.created_at,e.id')]
+        quotes = [dict(r) for r in connection.execute('SELECT q.*,i.symbol,i.market,i.kind AS instrument_kind FROM quotes q JOIN instruments i ON i.id=q.instrument_id')]
+        return events, quotes
+
+    def portfolio(self):
+        """Current holdings only; avoids loading the whole ledger for a quote refresh."""
+        with self._connection() as connection:
+            return self._portfolio(*self._asset_rows(connection))
+
+    def external_ids(self, source):
+        """Identifiers already received from one source (index-only lookup)."""
+        with self._connection() as connection:
+            return {row[0] for row in connection.execute('SELECT external_id FROM source_records WHERE source=?', (source,))}
+
+    def known_sources(self, sources):
+        """The immutable, fingerprinted fields of stored records from the given sources."""
+        sources = tuple(sources)
+        if not sources:
+            return []
+        with self._connection() as connection:
+            return [dict(r) for r in connection.execute(
+                'SELECT s.source,s.external_id,s.amount_minor,s.currency,s.merchant,s.occurred_at,s.kind,s.category,s.time_precision,a.name AS account '
+                f'FROM source_records s LEFT JOIN accounts a ON a.id=s.account_id WHERE s.source IN ({",".join("?"*len(sources))})', sources)]
+
+    def change_token(self):
+        """Cheap fingerprint of the database file that changes with every commit.
+
+        SQLite bumps the 4-byte file change counter (header offset 24) for each
+        write transaction in rollback-journal mode; size and mtime are included
+        as a second signal. A caller can skip reloading an unchanged ledger.
+        Returns None when the file cannot be read, which means "unknown".
+        """
+        try:
+            with open(self.database, 'rb') as handle:
+                handle.seek(24)
+                counter = handle.read(4)
+            stat = os.stat(self.database)
+            return (counter, stat.st_size, stat.st_mtime_ns)
+        except OSError:
+            return None
 
     def snapshot(self):
         with self._connection() as connection:
@@ -541,8 +668,7 @@ class Ledger:
                 item.update(entry=by_entry.get(item['entry_id']),source=by_source[item['source_record_id']],
                             candidates=[by_entry[c] for c in json.loads(item['candidate_ids_json']) if c in by_entry])
                 reviews.append(item)
-            events = [dict(r) for r in connection.execute('SELECT e.*,i.symbol,i.market,i.kind AS instrument_kind,a.name AS account FROM asset_events e JOIN instruments i ON i.id=e.instrument_id JOIN accounts a ON a.id=e.account_id ORDER BY e.occurred_at,e.created_at,e.id')]
-            quotes = [dict(r) for r in connection.execute('SELECT q.*,i.symbol,i.market,i.kind AS instrument_kind FROM quotes q JOIN instruments i ON i.id=q.instrument_id')]
+            events, quotes = self._asset_rows(connection)
             totals = defaultdict(lambda:{'expense_minor':0,'income_minor':0,'balance_minor':0})
             for entry in entries:
                 group = totals[entry['currency']]

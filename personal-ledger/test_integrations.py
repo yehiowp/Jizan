@@ -128,6 +128,24 @@ class GmailTests(unittest.TestCase):
             self.assertEqual(api.sync_gmail(ledger, self.config_path)["duplicates"], 1)
         self.assertEqual(len(ledger.ingested), 1)
 
+    def test_real_ledger_sync_and_quotes_do_not_rebuild_the_whole_snapshot(self):
+        from ledger import Ledger
+        ledger = Ledger(self.path / "ledger.sqlite3")
+        ledger.asset_event({"symbol": "2330", "market": "TWSE", "instrument_kind": "stock", "account": "證券", "kind": "buy",
+                            "quantity": "10", "cash_amount": "10000", "currency": "TWD", "occurred_at": "2026-11-10T12:00:00+08:00"})
+        def request(url, **kwargs):
+            if url == api.TWSE_URL:
+                return [{"Code": "2330", "ClosingPrice": "1,234.50", "Date": "1151109"}]
+            return self.request(url, **kwargs)
+        with patch.object(Ledger, "snapshot", side_effect=AssertionError("periodic jobs must use lean lookups")), \
+                patch.object(api, "_access_token", return_value="mock"), patch.object(api, "_request_json", side_effect=request):
+            self.assertEqual(api.sync_gmail(ledger, self.config_path)["imported"], 1)
+            self.assertEqual(api.sync_gmail(ledger, self.config_path)["duplicates"], 1)
+            self.assertEqual(api.update_quotes(ledger)["updated"], 1)
+        snapshot = ledger.snapshot()
+        self.assertEqual(len(snapshot["entries"]), 1)
+        self.assertEqual(snapshot["portfolio"][0]["price_decimal"], "1234.50")
+
     def test_authentication_missing_stays_pending(self):
         def request(url, **kwargs):
             return {"messages": [{"id": "mail1"}]} if "/messages?" in url else self.message(auth=False)
