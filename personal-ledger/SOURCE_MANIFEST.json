@@ -31,8 +31,8 @@
     },
     {
       "path": "README.md",
-      "bytes": 8372,
-      "sha256": "d830d3dc7d3ed716027260a8c56321879f37e2535e531052eedfe06d6ee028cb"
+      "bytes": 9250,
+      "sha256": "b34942813ae3e346722a739804ecc4ba5dd0490bf74280886f8a3ced9ebeeb84"
     },
     {
       "path": "Start_Ledger.cmd",
@@ -76,8 +76,8 @@
     },
     {
       "path": "ios/PersonalLedger.xcodeproj/project.pbxproj",
-      "bytes": 5878,
-      "sha256": "8219c299d2c632fb4ddbf9d22b0ba4e1517e3a528c80427ab4266b160f18eb90"
+      "bytes": 6267,
+      "sha256": "1f971830693ff5f929a18e761401e31a04ae0046b1ac5e47acbf87948fe4d290"
     },
     {
       "path": "ios/PersonalLedger.xcodeproj/xcshareddata/xcschemes/PersonalLedger.xcscheme",
@@ -88,6 +88,21 @@
       "path": "ios/PersonalLedger/AddTransactionIntent.swift",
       "bytes": 1959,
       "sha256": "5068fc04d4a2c76c22ca36a64fde04ae588f0c35ad6c03662b46177e5cb7743e"
+    },
+    {
+      "path": "ios/PersonalLedger/Assets.xcassets/AppIcon.appiconset/AppIcon.png",
+      "bytes": 13923,
+      "sha256": "f62e985c302dea79ebf4bc733d8e1ac5b40da5b38480012e80623d0e62d6ef64"
+    },
+    {
+      "path": "ios/PersonalLedger/Assets.xcassets/AppIcon.appiconset/Contents.json",
+      "bytes": 211,
+      "sha256": "3725fefca1cc2f15dcff52b03b7db47884c8141e5be1d4e559367b76117f8c48"
+    },
+    {
+      "path": "ios/PersonalLedger/Assets.xcassets/Contents.json",
+      "bytes": 63,
+      "sha256": "0fd49ba3c3585c709678e0046a821c3c60685ec7063720d30d3a3448be3a208b"
     },
     {
       "path": "ios/PersonalLedger/Info.plist",
@@ -116,8 +131,8 @@
     },
     {
       "path": "ios/README.md",
-      "bytes": 8359,
-      "sha256": "9d2d89d50f0f9462e78323d21eaff5e059076bc834f8eee0eec7003cfa1f964c"
+      "bytes": 10887,
+      "sha256": "27a799682cc8eeeb4b0438f1b9d5e116b7f8ba25fe399da07a2a9f45f5d54bea"
     },
     {
       "path": "ledger.py",

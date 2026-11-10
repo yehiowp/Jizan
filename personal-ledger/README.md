@@ -58,7 +58,12 @@ CSV 範本位於 [examples/statement-template.csv](examples/statement-template.c
 
 網頁離線儲存可能因清除網站資料、裝置空間不足或移除 App 而消失，請定期備份。程式會請求持久儲存，但無法保證系統一定允許。
 
-先前的 [iOS 原生開發版](ios/README.md) 保留供將來有 Mac 時使用，尚未經 Xcode 編譯或安裝。Windows 原生 App 配對服務預設關閉，與手機網頁版的檔案交換分開。
+### 想像一般 App 一樣安裝？
+
+iPhone 只能安裝經過 Apple 簽署的 App，不能像 Android 一樣從網站下載安裝檔直接安裝。可以選：
+
+- **主畫面 App（建議；免費、不需 Mac）**：用 Safari 開啟一次手機網址，選「分享 → 加入主畫面」。之後從主畫面圖示開啟就是全螢幕 App、沒有網址列，離線也能用；只有第一次安裝會用到 Safari。Safari 分頁與主畫面 App 的帳目分開保存，在 Safari 分頁開啟時 App 會提示怎麼加入、怎麼搬移既有紀錄。
+- **[原生 iOS App](ios/README.md)**：GitHub Actions 會在雲端的 Mac 環境編譯出未簽署的安裝檔（.ipa），不需要自己的 Mac。可用 Windows 上的 Sideloadly／AltStore 以自己的 Apple ID 免費簽署安裝，但每 7 天要重新簽署；或加入 Apple Developer Program（每年 US$99）改用 TestFlight 安裝。原生版透過家中網路與 Windows 同步，帳目與手機網頁版不互通。Windows 端的原生 App 配對服務預設關閉，與手機網頁版的檔案交換分開。
 
 ## 原始碼與驗證
 

@@ -6,6 +6,23 @@
 
 ## 安裝至 iPhone
 
+iPhone 只能安裝經過 Apple 簽署的 App，不能像 Android 一樣從網站下載安裝檔直接安裝。沒有上架 App Store 時有以下三種方式。這個原生 App 與手機網頁版「隨身帳本」是兩個不同的 App，帳目不互通：原生版透過家中網路與 Windows 同步，並可讓 Apple Pay 捷徑直接記帳。
+
+### 方式一：不需 Mac、免費，用自己的 Apple ID 簽署
+
+1. GitHub 上的「iPhone app (native)」工作流程（`.github/workflows/ios-app.yml`）會在 GitHub 提供的 Mac 環境編譯，產生未簽署的安裝檔。到 repo 的 **Actions** 頁面開啟最近一次成功的執行，在 **Artifacts** 下載 `PersonalLedger-unsigned-ipa`，解壓縮得到 `PersonalLedger-unsigned.ipa`（保留 30 天；修改 `ios/` 後會重新編譯，也可在 Actions 頁面手動執行）。
+2. 在 Windows 安裝 Sideloadly 或 AltStore，依該工具的說明安裝它需要的 Apple 元件（iTunes／iCloud），再用 USB 連接 iPhone。
+3. 用工具以自己的 Apple ID 簽署並安裝這個 IPA。工具需要登入 Apple ID 才能向 Apple 取得免費簽署，可考慮另建一個專用的 Apple ID。若提示識別碼（Bundle ID）已被使用，在工具的進階選項改成自己的，例如 `com.你的名字.personalledger`，之後每次都用同一個。
+4. 第一次安裝後，在 iPhone「設定 → 隱私權與安全性 → 開發者模式」開啟並重新開機；若開啟 App 時顯示未受信任的開發者，到「設定 → 一般 → VPN 與裝置管理」信任自己的 Apple ID。
+5. 免費 Apple ID 簽署的 App **7 天後就無法開啟**，需要用同一工具、同一個 Bundle ID 重新簽署安裝（AltStore 可在同一 Wi-Fi 自動續簽）。直接覆蓋安裝、不要先刪除 App，才能保留 App 內的帳目；也請定期同步到 Windows 或匯出備份。免費帳號同時最多 3 個自行安裝的 App。
+
+### 方式二：付費 Apple Developer Program（每年 US$99）
+
+- 可以用 **TestFlight** 安裝：在 iPhone 的 TestFlight App 點一下就像一般 App 一樣安裝，不需每 7 天重簽；每個版本 90 天後到期，期間上傳新版即可更新。也可以上架 App Store。
+- 仍然不需要 Mac：簽署與上傳也能在 GitHub Actions 完成，但要先在 App Store Connect 建立這個 App，並把簽署憑證與 API 金鑰存成 repo 的 secrets。目前的工作流程只產生未簽署 IPA，改用 TestFlight 需要另外設定。
+
+### 方式三：有 Mac 時用 Xcode 安裝
+
 1. 使用 Mac，安裝支援你手機 iOS 版本的 Xcode，開啟 `PersonalLedger.xcodeproj`。
 2. 在 Xcode 的 Apple Accounts 登入自己的 Apple Account，選取 PersonalLedger target，在 Signing & Capabilities 選擇自己的 Team，保留自動簽署。必要時將 Bundle Identifier 改為自己唯一的識別碼。
 3. 選擇 iPhone 作為執行裝置，依 Xcode 提示配對並開啟 Developer Mode，按 Run。簽署憑證與 Apple Account 由你在 Xcode 管理，不需要傳給本程式。
