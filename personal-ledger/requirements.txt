@@ -1,0 +1,2 @@
+# Optional: local PDF statement parsing. Core app uses Python stdlib only.
+pypdf[crypto]==7.0.0

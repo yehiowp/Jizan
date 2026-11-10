@@ -1,0 +1,73 @@
+個人總帳本：給 Claude 的除錯交接
+
+本包為 Windows 與 iPhone 記帳程式原始碼，未附真實帳本、帳單、憑證、密碼、OAuth token、Git 歷史或 Sites 部署設定。
+請先在獨立資料庫重現問題，不要用預設正式帳本除錯。以下命令在解壓後的專案根目錄以 PowerShell 執行。
+
+執行環境
+- Python 3.10 以上，需有 Tkinter；本機已驗證 Python 3.10.6。
+- 手機網頁開發／測試需要 Node.js 與 npm；本機版本為 Node.js v24.19.0。
+- Windows 打包另外需要 PyInstaller。
+
+安裝與啟動 Windows 原始碼
+python -m venv .venv
+.\.venv\Scripts\python.exe -m pip install -r requirements.txt
+New-Item -ItemType Directory -Force .\scratch | Out-Null
+.\.venv\Scripts\python.exe desktop.py --database .\scratch\debug.sqlite3
+
+驗證
+.\.venv\Scripts\python.exe -m unittest discover -s . -p 'test_*.py'
+.\.venv\Scripts\python.exe desktop.py --database .\scratch\smoke.sqlite3 --smoke-test
+Push-Location mobile
+npm.cmd ci
+node prepare.mjs
+npm.cmd test
+Pop-Location
+
+既有驗證基準：139 個 Python 測試、26 個 Node 測試通過。這是交接時的既有結果；修改後請重新執行。Python 跨語言測試在找不到 Node 時會跳過，需留意測試輸出的 skipped 數量。
+
+手機網頁本機預覽
+.\.venv\Scripts\python.exe -m http.server 8000 --bind 127.0.0.1 --directory mobile/dist
+再以瀏覽器開啟 http://localhost:8000 。不要直接開啟 file:// HTML；實體 iPhone 的主畫面安裝及離線快取需使用受信任的 HTTPS 入口。
+手機檔案修改後執行 node mobile/prepare.mjs 更新離線快取版本。
+
+程式位置
+- desktop.py：Tkinter Windows 介面、帳目／待確認／匯入／資產／設定。
+- ledger.py、schema.sql：SQLite、來源去重、核對、帳目、持倉、備份還原。
+- statements.py：CSV／TSV 欄位轉換與 PDF 文字擷取。
+- bank_statement.py：台新信用卡 PDF 明細解析與摘要控制。
+- prepare_statement.py：本機 PDF 解密／預覽輔助程式。
+- transfer.py：手機 JSON 匯入及 Windows 總帳快照匯出。
+- integrations.py：Gmail 唯讀 OAuth／郵件解析、TWSE／加密貨幣報價。
+- sync_server.py：可選用的原生 iOS 區域網路服務，預設關閉。
+- mobile/dist/：實際手機 PWA 原始碼，包含 app.mjs、core.mjs、store.mjs、sw.js、HTML、CSS；不是可刪除的建置快取。
+- mobile/test_*.mjs：核心、模擬 DOM 與 Service Worker 測試。
+- ios/：原生 iOS 開發版，尚未經 Xcode 編譯或安裝。
+- test_*.py：合成資料測試；examples/：合成 CSV 範本。
+- README.md、INTEGRATIONS.md、TRANSFER.md、TAISHIN_STATEMENT.md：功能與格式說明。
+
+除錯時需保留的資料規則
+- 金額以最小貨幣單位整數保存，數量及報價採十進位字串；不要改成浮點數近似計算。
+- source + external_id 是不可變的來源識別；相同來源重試不能重複入帳，也不能用不同內容覆寫同一識別碼。
+- 來源紀錄與正式帳目分開；不確定的金額、商家或日期、對帳單紀錄要進待確認，不能為了測試方便自動批准。
+- 消費、費用、退款與繳卡費需保持區別；退款不能直接合併成支出，繳卡費為轉帳，不再計一次開銷。
+- 對帳單摘要／逐筆合計或控制不符時禁止整份匯入；保留消費日與入帳日，日期未提供時間時不要假裝有真實交易時間。
+- 不同幣別不直接合計；USDT 不視為 USD。修改配對、金額、持倉或交換格式時，請補充能重現問題的測試。
+
+已知限制
+- PWA 已有模擬 DOM／IndexedDB／離線快取測試，尚未完成 iPhone Safari／Wallet 實機驗證。
+- 手機與 Windows 目前透過 JSON 檔案交換，不是背景自動同步；網頁不能任意讀其他 App 的推播。
+- Gmail 需要使用者另行設定 Desktop OAuth 與唯讀授權；原始碼不含已授權帳號或 token。
+- 目前已驗證一種台新文字型電子帳單格式；其他銀行僅提供文字預覽，掃描帳單尚無 OCR。
+- TWSE 來源為最近可取得交易日收盤價；Coinbase 在原開發電腦有 TLS 信任鏈問題。更新失敗應保留最後快取。
+- 原生 iOS 專案需要 Mac／Xcode，未編譯驗證；目前沒有 Mac 也能使用 PWA。
+
+可直接貼給 Claude
+請協助除錯這份個人總帳本。先閱讀 CLAUDE_DEBUG.txt 與 README.md，以 .\scratch\debug.sqlite3 重現，避免讀寫我的正式帳本。請保留精確金額、來源識別與去重、待確認、退款／轉帳的資料規則。先找出根因，再做範圍最小的修正；執行相關 Python／Node 測試，說明改動檔案、驗證結果及尚未驗證部分。不要要求提供密碼、完整帳單或 OAuth token；需要範例時使用去識別的合成資料。
+
+重現資訊（由使用者補上）
+問題現象：
+預期結果：
+重現步驟：
+實際錯誤訊息／畫面：
+Windows／iOS／瀏覽器版本：
+最後正常的版本或操作：

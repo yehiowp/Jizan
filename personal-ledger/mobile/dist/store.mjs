@@ -1,0 +1,5 @@
+const NAME='personal-ledger-pocket-v1';let database;
+const blank=()=>({version:1,device_id:crypto.randomUUID(),records:[],snapshot:null,account:'日常消費',currency:'TWD',history:[]});
+export function openStore(){return database??=(new Promise((resolve,reject)=>{const r=indexedDB.open(NAME,1);r.onupgradeneeded=()=>r.result.createObjectStore('state');r.onsuccess=()=>{r.result.onversionchange=()=>r.result.close();resolve(r.result)};r.onerror=()=>reject(Error('手機無法開啟離線儲存，請使用一般瀏覽模式'));r.onblocked=()=>reject(Error('請先關閉其他帳本視窗再試'));}));}
+export async function mutate(fn){const db=await openStore();return new Promise((resolve,reject)=>{const tx=db.transaction('state','readwrite'),store=tx.objectStore('state');let next;const req=store.get('main');req.onsuccess=()=>{try{next=req.result??blank();if(next.version!==1)throw Error('帳本版本較新，請先更新網頁');next=fn(next)??next;store.put(next,'main')}catch(e){reject(e);tx.abort();}};tx.oncomplete=()=>resolve(next);tx.onerror=()=>reject(Error('手機儲存失敗，資料未確認寫入；請先備份並檢查空間'));tx.onabort=()=>reject(Error('未完成儲存，原紀錄已保留'));});}
+export const read=()=>mutate(s=>s);

@@ -1,0 +1,288 @@
+{
+  "created_at": "2026-11-10T10:33:03+00:00",
+  "purpose": "PersonalLedger source handoff for debugging",
+  "excluded": [
+    "real ledgers and statements",
+    "passwords and OAuth credentials",
+    "Git history",
+    "Sites deployment settings",
+    "node_modules and executables"
+  ],
+  "files": [
+    {
+      "path": ".gitignore",
+      "bytes": 242,
+      "sha256": "4b16836577eff36684f924d6a1aff21a525ad8a071d9a6ab333507804b28f9f9"
+    },
+    {
+      "path": "CLAUDE_DEBUG.txt",
+      "bytes": 5014,
+      "sha256": "46eb0a932071c103353b07f119a8d98a25692d2b660dac01c31e838a76ce1aaf"
+    },
+    {
+      "path": "INTEGRATIONS.md",
+      "bytes": 10778,
+      "sha256": "efe24bf563c887d4693e25e464224aa69880be46b3cd2f19b4cfedc6ad59204d"
+    },
+    {
+      "path": "MOBILE.md",
+      "bytes": 1098,
+      "sha256": "0508e10cc5c015c88af5dfcffb8b85aa3b6710e0627859608b8a29bd930cea26"
+    },
+    {
+      "path": "README.md",
+      "bytes": 7627,
+      "sha256": "7d8b6b73c55e53d70d19444195d16fe64289283181c0d83cdf4cad6d49855cc7"
+    },
+    {
+      "path": "Start_Ledger.cmd",
+      "bytes": 254,
+      "sha256": "f91241e1a433871e09e9f8c807dce730bd416d1bdf3f8ebe9a5f6faac67207d6"
+    },
+    {
+      "path": "TAISHIN_STATEMENT.md",
+      "bytes": 2894,
+      "sha256": "87ef03117711a4d44d2db58ac410a13ef26dba56f9c12105bda18e051cf2e19d"
+    },
+    {
+      "path": "TRANSFER.md",
+      "bytes": 4260,
+      "sha256": "4cf00d959706b4c5998fe2b3aa75f60e8a038f7da387306b727e636c9bb65491"
+    },
+    {
+      "path": "bank_statement.py",
+      "bytes": 17994,
+      "sha256": "b1d344a73e653cd23637d6db2c5488a8b73628db3d9055e43924b43f8bee461f"
+    },
+    {
+      "path": "build_windows.ps1",
+      "bytes": 1540,
+      "sha256": "9caaacc55aafed503c8e3f69220fe4530e675f03510a71d7bfcab848ff9f6def"
+    },
+    {
+      "path": "desktop.py",
+      "bytes": 66820,
+      "sha256": "61ff87d73a93a4fc5783386e8cdae12ecbc20c7a60dd4fa643c2a7800f43bbf7"
+    },
+    {
+      "path": "examples/statement-template.csv",
+      "bytes": 58,
+      "sha256": "3b216d9bfabd7792cfa3dbb746fe8869cd2c8a18f33e4741e108fc3df3c8120d"
+    },
+    {
+      "path": "integrations.py",
+      "bytes": 35864,
+      "sha256": "106c04af38d1a6df10d4ca124e8b8894ba841a0471ffb9eaed676a6f617cbd97"
+    },
+    {
+      "path": "ios/PersonalLedger.xcodeproj/project.pbxproj",
+      "bytes": 5878,
+      "sha256": "8219c299d2c632fb4ddbf9d22b0ba4e1517e3a528c80427ab4266b160f18eb90"
+    },
+    {
+      "path": "ios/PersonalLedger.xcodeproj/xcshareddata/xcschemes/PersonalLedger.xcscheme",
+      "bytes": 2145,
+      "sha256": "013b1855d1eb4fdc6eeba322be3b0d7fb49363eb2ac7de4c729aac82ab6abc88"
+    },
+    {
+      "path": "ios/PersonalLedger/AddTransactionIntent.swift",
+      "bytes": 1959,
+      "sha256": "5068fc04d4a2c76c22ca36a64fde04ae588f0c35ad6c03662b46177e5cb7743e"
+    },
+    {
+      "path": "ios/PersonalLedger/Info.plist",
+      "bytes": 1097,
+      "sha256": "8a877b36a34569efcbc174eb705092ddcbf7e6fa608e166f8ddf4d9e70030475"
+    },
+    {
+      "path": "ios/PersonalLedger/LocalStore.swift",
+      "bytes": 5851,
+      "sha256": "7c48e82661b106ae7da5a83789253d027fafa5ac869e1c219fd6f0f0c10eb9a4"
+    },
+    {
+      "path": "ios/PersonalLedger/Models.swift",
+      "bytes": 7863,
+      "sha256": "f8b18659d3513e5323aeaaabc72bccff1f3cfede6015e52e4aa75a337ec70f60"
+    },
+    {
+      "path": "ios/PersonalLedger/PersonalLedgerApp.swift",
+      "bytes": 17045,
+      "sha256": "30e7659ae834791383e11e2d9127420c16f0770cbc4cd8ea6817927cae30052a"
+    },
+    {
+      "path": "ios/PersonalLedger/SyncClient.swift",
+      "bytes": 3958,
+      "sha256": "938359c53f6d14d6f3af4edc526156d22cfa635f568abf4b07ef4ac2d25e1c54"
+    },
+    {
+      "path": "ios/README.md",
+      "bytes": 8359,
+      "sha256": "9d2d89d50f0f9462e78323d21eaff5e059076bc834f8eee0eec7003cfa1f964c"
+    },
+    {
+      "path": "ledger.py",
+      "bytes": 39127,
+      "sha256": "aacd0d642c48803ab5cb91bf317864c3d2c28cb6fe79a11fae17c43bc263c07f"
+    },
+    {
+      "path": "mobile-guides/APPLE_PAY_WITHOUT_MAC.md",
+      "bytes": 8730,
+      "sha256": "763bb3bbf207379095a66f213c6939c8c85f1fa432e9acb4dc1daca6843dc90f"
+    },
+    {
+      "path": "mobile/.gitignore",
+      "bytes": 56,
+      "sha256": "eed5d2a67775bc6cea22fd3ae82696ed1bb16ece191d7d3284cb7e62e694803e"
+    },
+    {
+      "path": "mobile/dist/app.mjs",
+      "bytes": 16227,
+      "sha256": "fe15e0c739244c1d82c2295957f42f8cc97b5a0b8014c84e45edb85e4e98ceff"
+    },
+    {
+      "path": "mobile/dist/apple-pay-guide.html",
+      "bytes": 4437,
+      "sha256": "b43f0dee3c4471a41eb6843e922fd997beac352c46d1e638e6ad6548e0422732"
+    },
+    {
+      "path": "mobile/dist/core.mjs",
+      "bytes": 10059,
+      "sha256": "8c9e7d07711b29b1addafb01559a5792b3a56758bd9bcf12c78b5ec79269b453"
+    },
+    {
+      "path": "mobile/dist/icon-180.png",
+      "bytes": 730,
+      "sha256": "92fc61ece0897c5f1bab55f3c35ec4d9b92a7f2fe4c97103db8dd327fa04105a"
+    },
+    {
+      "path": "mobile/dist/icon.svg",
+      "bytes": 331,
+      "sha256": "047b1d735821edde1c9fc85ffe79228a709082f326ad0866d289c2e6377d77bf"
+    },
+    {
+      "path": "mobile/dist/index.html",
+      "bytes": 9047,
+      "sha256": "704c458f85d0874f4c63513f605511091fead297467c1f748a514a3c4da69840"
+    },
+    {
+      "path": "mobile/dist/manifest.webmanifest",
+      "bytes": 406,
+      "sha256": "2e0c2e726310e03b1f012e8f5dbb23b6c2ace608ff7b7b6d5bf99f51a0c310f0"
+    },
+    {
+      "path": "mobile/dist/store.mjs",
+      "bytes": 1261,
+      "sha256": "8f96e51eed37bf2383a0e90416c36c200408926ba4a50fdc1c432dd5cc5281df"
+    },
+    {
+      "path": "mobile/dist/style.css",
+      "bytes": 12001,
+      "sha256": "0b47bc639ff74d2f2872d00ff8af39a7cf929bbbb55b6721ed9f87cb9bfee31b"
+    },
+    {
+      "path": "mobile/dist/sw.js",
+      "bytes": 2746,
+      "sha256": "b668565c200490bccd38876def1be0eb090af9972140c779229a0252106b446e"
+    },
+    {
+      "path": "mobile/package-lock.json",
+      "bytes": 19030,
+      "sha256": "914ef5f32c0445aeb58f11b8da8b48bd03af4143a90c35d1cadbc72b80df83c1"
+    },
+    {
+      "path": "mobile/package.json",
+      "bytes": 253,
+      "sha256": "24382c4176c78628b64b0369cbb2e7437e400df7a833a919abb203bce28896b7"
+    },
+    {
+      "path": "mobile/prepare.mjs",
+      "bytes": 683,
+      "sha256": "ed9d5602a78b382af63ab621dc019dea0fb43858d66d47bd934a4a3fd163e25c"
+    },
+    {
+      "path": "mobile/test_core.mjs",
+      "bytes": 7032,
+      "sha256": "922d2100282b18236f8809594e948da028971dd6a6fca0c28e16021f2d5f8ec3"
+    },
+    {
+      "path": "mobile/test_dom.mjs",
+      "bytes": 5220,
+      "sha256": "27aaa49bf0cae7e9e121b04f456d5253075e0d17d408effd7341e26f18415621"
+    },
+    {
+      "path": "mobile/test_sw.mjs",
+      "bytes": 2298,
+      "sha256": "70f6661bb230fff56455955140534f31252abc2972305b6c7b64951bda472131"
+    },
+    {
+      "path": "prepare_statement.py",
+      "bytes": 8822,
+      "sha256": "6da57ac3ec6ce211e982ec44454579238151b283f786190fcb3d52b47c86d366"
+    },
+    {
+      "path": "requirements.txt",
+      "bytes": 96,
+      "sha256": "d41dca01115e5b006a53d85b909c4bc46d44f86fc8e873a9d6ce8d7357c4c3bf"
+    },
+    {
+      "path": "schema.sql",
+      "bytes": 2114,
+      "sha256": "9963009e2186d88f0fb64334511c72df55fa1ebb5cfedab9d091f54df2520e0a"
+    },
+    {
+      "path": "statements.py",
+      "bytes": 8928,
+      "sha256": "36607fafcfa65743a196a80fdfb35815641d0477906ed50c1d321931518732ea"
+    },
+    {
+      "path": "sync_server.py",
+      "bytes": 11877,
+      "sha256": "bf8b3fe5a555364f0fcf10de75c668f36c3751b7ad7784f013a98d64ed6cd6c4"
+    },
+    {
+      "path": "test_bank_statement.py",
+      "bytes": 9744,
+      "sha256": "33200210f5e037b93d3d6251b4c17d6335004c5361aa6f0143a2d5310ff7e00c"
+    },
+    {
+      "path": "test_desktop.py",
+      "bytes": 15342,
+      "sha256": "6766958a1cfa15591d654f98fb7d75155931a7a6c97cd5480bc208f742e946d8"
+    },
+    {
+      "path": "test_integrations.py",
+      "bytes": 21326,
+      "sha256": "630b97a29b925024382f795c4aa37a4d38cc59a4dcd52d077da813134761e253"
+    },
+    {
+      "path": "test_ledger.py",
+      "bytes": 24027,
+      "sha256": "77860f99814fe3e3b346f27e9cfae0cb504c3833b1b3b310dfddf857dd352be3"
+    },
+    {
+      "path": "test_mobile_roundtrip.py",
+      "bytes": 2252,
+      "sha256": "b515ef70d53ddd75621ffc2807398cbf91b59eacb6e8b72a9c45ba063d8c9cba"
+    },
+    {
+      "path": "test_prepare_statement.py",
+      "bytes": 5817,
+      "sha256": "4f821fcca2fe9f0f56eb515af99eb6b7c0b0f1654488fd764ff30aa0436853cf"
+    },
+    {
+      "path": "test_sync_server.py",
+      "bytes": 8235,
+      "sha256": "7fcbb697cd01e71658ac47f7869e3897dfc5434111683edddb9cfe8d95432ca5"
+    },
+    {
+      "path": "test_transfer.py",
+      "bytes": 10724,
+      "sha256": "250841cab09727e011966015fc055171316fbfb665b24b78704e30cd3e4fde8a"
+    },
+    {
+      "path": "transfer.py",
+      "bytes": 10855,
+      "sha256": "97203f3c4cd13ca6877fd906bba84f11657837c466377dabb6d45a43f2112c77"
+    }
+  ]
+}

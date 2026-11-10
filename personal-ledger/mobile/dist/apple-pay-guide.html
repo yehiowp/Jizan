@@ -1,0 +1,15 @@
+<!doctype html><html lang="zh-Hant"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover"><meta name="theme-color" content="#123e37"><link rel="stylesheet" href="./style.css"><title>Apple Pay 設定 · 隨身帳本</title></head><body><article class="app-shell"><header class="app-header"><a class="brand" href="./"><span class="brand-mark">帳</span>隨身帳本</a><a class="text-button" href="./">返回帳本 →</a></header><span class="section-eyebrow">APPLE PAY · WITHOUT A MAC</span><h1>交易先存檔，帳本再核對。</h1><p class="intro">使用 iPhone 的「捷徑」自動化，把每筆 Wallet 交易存成 JSON 紀錄。此流程不需要 Mac；實際欄位與背景存檔仍要用你的 iPhone 驗證。</p>
+<div class="utility-card"><h2>先確認手機能提供交易資料</h2><ol class="help-steps"><li>安裝主畫面帳本後，到「檔案」的「我的 iPhone」建立 PersonalLedger 資料夾。</li><li>到「捷徑」→「自動化」，選 Wallet／交易，選擇自己的卡片。</li><li>檢查實際交易輸入是否有金額、商家及卡片名稱。先以「快速查看」測試，不寫入正式帳本。</li></ol><p>Apple 官方確認 Wallet 卡片感應可觸發自動化，沒有保證所有卡片、地區或系統版本都提供相同交易欄位。網路 Apple Pay 交易也要分別測試。</p></div>
+<div class="utility-card"><h2>建立每筆交易的紀錄檔</h2><ol class="help-steps"><li>新增「辭典」，填入下列欄位。金額、商家與帳戶必須連接實際交易輸入。</li><li>新增「產生 UUID」，用作 external_id，同時作為檔名。</li><li>交易時間使用原始交易時間；若只有捷徑執行時間，請加 force_review = true。時間需為完整 ISO 8601，例如 2026-11-10T12:30:00+08:00。</li><li>將辭典轉為文字，用「快速查看」確認為 JSON，並確認金額是純數字字串，沒有 NT$ 或千分位。</li><li>用「設定名稱」命名為 UUID.json，再以「儲存檔案」儲存到 PersonalLedger 資料夾。若可用，關閉每次詢問儲存位置。</li><li>完成一筆自己的測試交易，再確認離線、鎖定畫面及重新啟動後的行為。</li></ol><p class="error">以下只是欄位範例。請勿將範例金額、商家或日期直接寫入真實交易自動化。</p><pre style="white-space:pre-wrap;overflow-wrap:anywhere;font-size:11px;line-height:1.9;background:white;padding:15px;border-radius:10px">{
+  "source": "apple_pay",
+  "external_id": "產生的 UUID",
+  "amount": "實際金額字串",
+  "currency": "TWD",
+  "merchant": "實際商家",
+  "account": "與 Windows 一致的卡片名稱",
+  "kind": "expense",
+  "occurred_at": "含時區的 ISO 8601 時間",
+  "force_review": true
+}</pre><p>外幣消費不可固定填 TWD；幣別不明時先保留人工記帳。沒有商家或金額時，不要填入猜測值。</p></div>
+<div class="utility-card"><h2>匯入手機，再交給 Windows</h2><ol class="help-steps"><li>從主畫面打開「隨身帳本」→「轉移」→「匯入捷徑紀錄」。</li><li>從 PersonalLedger 資料夾選取一個或多個 JSON 檔，預覽後確認。</li><li>選「匯出待核對紀錄」，透過「檔案」、OneDrive 等方式交給電腦。</li><li>Windows 選「匯入手機紀錄」；核對後選「匯出手機總帳」，再匯入手機。</li></ol><p>重複匯入同一檔案不會重複記帳；重新執行整個捷徑若產生新 UUID，仍可能代表第二筆來源，Windows 會將相似通知列為待確認。</p></div>
+<div class="utility-card"><h2>這個版本的界線</h2><p>手機網頁不能背景掃描其他 App 的通知或整個資料夾，也不會在關閉後自動同步。Safari 分頁與主畫面 App 的儲存可能分開，請固定從主畫面圖示操作。</p><p>iPhone 主畫面 App 使用 HTTPS；直接連線到 Windows 未加密 HTTP 服務會遇到瀏覽器限制，因此此版使用檔案交換。</p><a class="guide-link" href="https://support.apple.com/en-ie/guide/shortcuts/apd65c67538a/ios">Apple Wallet 交易觸發說明 ↗</a><a class="guide-link" href="https://webkit.org/blog/14403/updates-to-storage-policy/">WebKit 離線儲存說明 ↗</a></div><p class="local-note">設定完成後，請先在飛航模式測試新增、存檔與重新開啟；保留一份自己的帳本備份。</p></article></body></html>

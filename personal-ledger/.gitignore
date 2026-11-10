@@ -1,0 +1,15 @@
+data/
+__pycache__/
+*.sqlite3
+*.sqlite3-*
+client_secret*.json
+credentials*.json
+*token*.json
+*token*.txt
+*.log
+/build/
+# PyInstaller 輸出；mobile/dist 是手機 App 原始碼，必須保留
+/dist/
+*.spec
+ios/DerivedData/
+ios/**/xcuserdata/
