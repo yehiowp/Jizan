@@ -54,7 +54,7 @@ jobs:
           ls -l PersonalLedger-unsigned.ipa
 
       - name: Upload unsigned IPA
-        uses: actions/upload-artifact@v5
+        uses: actions/upload-artifact@v6
         with:
           name: PersonalLedger-unsigned-ipa
           path: personal-ledger/ios/PersonalLedger-unsigned.ipa
@@ -63,7 +63,7 @@ jobs:
 
       - name: Upload build log
         if: failure()
-        uses: actions/upload-artifact@v5
+        uses: actions/upload-artifact@v6
         with:
           name: build-log
           path: personal-ledger/ios/build.log
