@@ -16,8 +16,8 @@
     },
     {
       "path": "CLAUDE_DEBUG.txt",
-      "bytes": 5687,
-      "sha256": "29a32a66de39788162d0b2a8dc24bdbd14b5b3e09600c797c3466b7797a3b7fb"
+      "bytes": 5892,
+      "sha256": "f66f7d6667287b3f47896675438378f66609c0d7be277b1383f8b0d365192738"
     },
     {
       "path": "INTEGRATIONS.md",
@@ -31,8 +31,8 @@
     },
     {
       "path": "README.md",
-      "bytes": 9250,
-      "sha256": "b34942813ae3e346722a739804ecc4ba5dd0490bf74280886f8a3ced9ebeeb84"
+      "bytes": 9298,
+      "sha256": "7f34a4b29e4fa65038f6910d40adb99bee4c0099fd97927d124dd7d9d1cfd415"
     },
     {
       "path": "Start_Ledger.cmd",
@@ -131,8 +131,8 @@
     },
     {
       "path": "ios/README.md",
-      "bytes": 10887,
-      "sha256": "27a799682cc8eeeb4b0438f1b9d5e116b7f8ba25fe399da07a2a9f45f5d54bea"
+      "bytes": 11134,
+      "sha256": "5004ed99e8a8424c8e9a14e73af0f5cad7f4b0b507ed206b0e09a157e1482a61"
     },
     {
       "path": "ledger.py",

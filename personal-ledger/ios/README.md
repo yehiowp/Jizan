@@ -2,7 +2,7 @@
 
 這是 iOS 17 以上的原生 SwiftUI App 原始碼，包含完整 Xcode 專案。可離線新增收入／支出、透過捷徑接收 Apple Pay 交易、保存待同步佇列、同步 Windows 總帳、查看金額差異與股票／加密貨幣持倉快取、匯出手機 JSON 備份。
 
-目前的開發電腦是 Windows，沒有 Apple SDK、Xcode 或實體 iPhone 連線；**iOS 原始碼尚未經 Xcode 編譯與實機測試，也尚未產生可安裝 IPA**。Windows 同步服務已用真實 HTTP 請求與一次性 SQLite 資料庫測試。手機畫面與 Wallet 變數需要下述實機驗證。
+**目前狀態**：2026-11-10 起，GitHub Actions 會用 Xcode 26.6（iOS 26.5 SDK）編譯這個 App 並產生未簽署 IPA，已編譯成功；尚未在實體 iPhone 安裝測試。編譯時 Siri 語句訓練步驟會顯示「Could not archive SSU artifacts」但不影響編譯成功；捷徑的「記錄 Apple Pay 消費」動作中繼資料已確認有打包進 App，Siri 語音片語是否可用需實機確認。Windows 同步服務已用真實 HTTP 請求與一次性 SQLite 資料庫測試。手機畫面與 Wallet 變數需要下述實機驗證。
 
 ## 安裝至 iPhone
 

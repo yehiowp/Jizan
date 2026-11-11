@@ -25,7 +25,7 @@ jobs:
       run:
         working-directory: personal-ledger/ios
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
 
       - name: Xcode version
         run: xcodebuild -version
@@ -44,14 +44,17 @@ jobs:
           APP=build/Build/Products/Release-iphoneos/PersonalLedger.app
           test -d "$APP"
           /usr/libexec/PlistBuddy -c 'Print :CFBundleIdentifier' -c 'Print :CFBundleShortVersionString' "$APP/Info.plist"
+          # The icon is compiled and referenced, and the Shortcuts action metadata is bundled.
           test -f "$APP/Assets.car"
+          test "$(/usr/libexec/PlistBuddy -c 'Print :CFBundleIcons:CFBundlePrimaryIcon:CFBundleIconName' "$APP/Info.plist")" = AppIcon
+          test -d "$APP/Metadata.appintents"
           mkdir -p Payload
           cp -R "$APP" Payload/
           zip -qry PersonalLedger-unsigned.ipa Payload
           ls -l PersonalLedger-unsigned.ipa
 
       - name: Upload unsigned IPA
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v5
         with:
           name: PersonalLedger-unsigned-ipa
           path: personal-ledger/ios/PersonalLedger-unsigned.ipa
@@ -60,7 +63,7 @@ jobs:
 
       - name: Upload build log
         if: failure()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v5
         with:
           name: build-log
           path: personal-ledger/ios/build.log

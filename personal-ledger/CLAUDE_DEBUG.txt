@@ -42,7 +42,7 @@ Pop-Location
 - mobile/dist/：實際手機 PWA 原始碼，包含 app.mjs、core.mjs、store.mjs、sw.js、HTML、CSS；不是可刪除的建置快取。
 - mobile/test_*.mjs：核心、模擬 DOM 與 Service Worker 測試（含 sw.js 快取版本與檔案清單是否和 dist/ 一致）。
 - mobile/e2e_browser.cjs：選用的真實瀏覽器檢查（npm run test:browser，需另裝 Playwright；未安裝時略過）。
-- ios/：原生 iOS 開發版，尚未經 Xcode 編譯或安裝。
+- ios/：原生 iOS 開發版。.github/workflows/ios-app.yml 在 GitHub Actions（macOS、Xcode 26.6）編譯並產生未簽署 IPA，已編譯成功；尚未在實機安裝。
 - test_*.py：合成資料測試；examples/：合成 CSV 範本。
 - README.md、INTEGRATIONS.md、TRANSFER.md、TAISHIN_STATEMENT.md：功能與格式說明。
 
@@ -61,7 +61,7 @@ Pop-Location
 - Gmail 需要使用者另行設定 Desktop OAuth 與唯讀授權；原始碼不含已授權帳號或 token。
 - 目前已驗證一種台新文字型電子帳單格式；其他銀行僅提供文字預覽，掃描帳單尚無 OCR。
 - TWSE 來源為最近可取得交易日收盤價；Coinbase 在原開發電腦有 TLS 信任鏈問題。更新失敗應保留最後快取。
-- 原生 iOS 專案需要 Mac／Xcode，未編譯驗證；目前沒有 Mac 也能使用 PWA。
+- 原生 iOS 專案已能在 GitHub Actions 編譯，但尚未實機安裝測試；安裝需以 Apple ID 簽署（免費帳號 7 天）或 TestFlight。目前沒有 Mac 也能使用 PWA。
 
 可直接貼給 Claude
 請協助除錯這份個人總帳本。先閱讀 CLAUDE_DEBUG.txt 與 README.md，以 .\scratch\debug.sqlite3 重現，避免讀寫我的正式帳本。請保留精確金額、來源識別與去重、待確認、退款／轉帳的資料規則。先找出根因，再做範圍最小的修正；執行相關 Python／Node 測試，說明改動檔案、驗證結果及尚未驗證部分。不要要求提供密碼、完整帳單或 OAuth token；需要範例時使用去識別的合成資料。
